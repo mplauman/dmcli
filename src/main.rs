@@ -1,3 +1,7 @@
+use crate::events::Event;
+
+mod events;
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     use tokio::sync::mpsc;
@@ -8,7 +12,7 @@ async fn main() {
     // Spawn a producer task to simulate adding tasks to the queue
     task::spawn(async move {
         for i in 1..=10 {
-            if tx.send(format!("Task {}", i)).await.is_err() {
+            if tx.send(Event::KeyboardInput(i)).await.is_err() {
                 println!("Receiver dropped");
                 break;
             }
@@ -16,7 +20,9 @@ async fn main() {
     });
 
     // Consumer loop
-    while let Some(task) = rx.recv().await {
-        println!("Processing {}", task);
+    while let Some(event) = rx.recv().await {
+        match event {
+            Event::KeyboardInput(key) => println!("Key event {}", key),
+        }
     }
 }
