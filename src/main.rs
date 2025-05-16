@@ -29,7 +29,7 @@ fn main() -> Result<(), Error> {
         rl.add_history_entry(line.as_str())?;
 
         if let Some(Ok(cli)) = split(line.as_str()).map(DmCli::try_parse_from) {
-            match (cli.command) {
+            match cli.command {
                 DmCommand::Exit {} => {
                     println!("Good bye!");
                     break;
