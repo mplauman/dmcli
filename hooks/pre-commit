@@ -1,0 +1,35 @@
+#!/bin/bash
+set -e
+
+echo "Running pre-commit checks..."
+
+# Store the current git stash list
+STASH_BEFORE=$(git stash list | wc -l)
+
+# Stash unstaged changes
+git stash -q --keep-index
+
+unstash_and_exit() {
+    if [ "$(git stash list | wc -l)" -ne "$STASH_BEFORE" ]; then
+        git stash pop -q
+    fi
+    exit $1
+}
+
+# Run rustfmt on all Rust files
+echo "Running rustfmt..."
+if ! cargo fmt --all -- --check; then
+    echo "rustfmt check failed! Run 'cargo fmt' to format your code"
+    unstash_and_exit 1
+fi
+
+# Run clippy on all Rust files
+echo "Running clippy..."
+if ! cargo clippy -- -D warnings; then
+    echo "clippy check failed! Please fix the warnings and try again"
+    unstash_and_exit 1
+fi
+
+# Success message
+echo "All pre-commit checks passed!"
+unstash_and_exit 0
