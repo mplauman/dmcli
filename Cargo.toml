@@ -4,4 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+clap = { version = "4.5.38", default-features = false, features = ["derive", "std"] }
+dotenv = { version = "0.15.0", default-features = false }
+rustyline = { version = "15.0.0", default-features = false }
+shlex = { version = "1.3.0", default-features = false }
 tokio = { version = "1.45.0", default-features = false, features = ["macros", "rt", "sync"] }

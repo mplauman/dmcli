@@ -1,28 +1,49 @@
-use crate::events::Event;
+use clap::Parser;
+use shlex::split;
 
-mod events;
+use crate::commands::{DmCli, DmCommand};
+use crate::errors::Error;
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() {
-    use tokio::sync::mpsc;
-    use tokio::task;
+mod commands;
+mod errors;
 
-    let (tx, mut rx) = mpsc::channel(32);
+fn main() -> Result<(), Error> {
+    let mut rl = rustyline::DefaultEditor::new().unwrap();
 
-    // Spawn a producer task to simulate adding tasks to the queue
-    task::spawn(async move {
-        for i in 1..=10 {
-            if tx.send(Event::KeyboardInput(i)).await.is_err() {
-                println!("Receiver dropped");
+    loop {
+        let line = match rl.readline(">> ") {
+            Ok(line) => line,
+            Err(rustyline::error::ReadlineError::Interrupted) => {
+                println!("Interrupted!");
                 break;
             }
-        }
-    });
+            Err(x) => {
+                return Err(x.into());
+            }
+        };
 
-    // Consumer loop
-    while let Some(event) = rx.recv().await {
-        match event {
-            Event::KeyboardInput(key) => println!("Key event {}", key),
+        if line.is_empty() {
+            continue;
         }
+
+        rl.add_history_entry(line.as_str())?;
+
+        if let Some(Ok(cli)) = split(line.as_str()).map(DmCli::try_parse_from) {
+            match (cli.command) {
+                DmCommand::Exit {} => {
+                    println!("Good bye!");
+                    break;
+                }
+                DmCommand::Roll { expressions } => {
+                    println!("Rolling {:?}", expressions.join(" "));
+                }
+            }
+
+            continue;
+        }
+
+        println!(">>> {}", line);
     }
+
+    Ok(())
 }
