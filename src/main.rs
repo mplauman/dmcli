@@ -1,4 +1,5 @@
 use clap::Parser;
+use config::Config;
 use shlex::split;
 
 use crate::commands::{DmCli, DmCommand};
@@ -22,8 +23,31 @@ fn parse(line: &str) -> Option<DmCommand> {
     }
 }
 
-fn main() -> Result<(), Error> {
+fn load_settings() -> Result<Config, Error> {
+    use config::{Environment, File};
+
+    let mut config_file = dirs::config_dir().expect("config dir should exist");
+    config_file.push("dmcli.toml");
+
+    Config::builder()
+        .add_source(File::from(config_file))
+        .add_source(Environment::with_prefix("DMCLI"))
+        .build()
+        .map_err(|e| e.into())
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Error> {
     let mut rl = rustyline::DefaultEditor::new().unwrap();
+
+    let settings = load_settings()?;
+    let api_key = settings
+        .get_string("anthropic.api_key")
+        .expect("api_key must be set");
+
+    let model = settings
+        .get_string("anthropic.model")
+        .unwrap_or("claude-3-5-haiku-20241022".to_owned());
 
     loop {
         let Some(line) = read_line(&mut rl)? else {
@@ -58,6 +82,30 @@ fn main() -> Result<(), Error> {
         //
         // (until the agent actually works, just spit out the line)
         println!(">>> {}", line);
+
+        let request = reqwest::Client::new()
+            .post("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", api_key.as_str())
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&serde_json::json!({
+                "model": model.as_str(),
+                "max_tokens": 1024,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": line,
+                    }
+                ]
+            }));
+
+        println!("Request: {:?}", request);
+
+        let response = request.send().await?;
+        println!("Response: {:?}", response);
+
+        let body = response.text().await?;
+        println!("Body: {:?}", body);
     }
 
     Ok(())
