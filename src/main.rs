@@ -1,10 +1,13 @@
+use anthropic::ClientBuilder;
 use clap::Parser;
 use config::Config;
 use shlex::split;
 
+use crate::anthropic::Client;
 use crate::commands::{DmCli, DmCommand};
 use crate::errors::Error;
 
+mod anthropic;
 mod commands;
 mod errors;
 
@@ -16,7 +19,7 @@ fn read_line(readline: &mut rustyline::DefaultEditor) -> Result<Option<String>, 
     }
 }
 
-fn parse(line: &str) -> Option<DmCommand> {
+fn parse_command(line: &str) -> Option<DmCommand> {
     match split(line).map(DmCli::try_parse_from) {
         Some(Ok(DmCli { command })) => Some(command),
         _ => None,
@@ -36,18 +39,26 @@ fn load_settings() -> Result<Config, Error> {
         .map_err(|e| e.into())
 }
 
+fn create_client(config: &Config) -> Result<Client, Error> {
+    let mut builder = ClientBuilder::default().with_api_key(
+        config
+            .get_string("anthropic.api_key")
+            .expect("api_key must be set"),
+    );
+
+    if let Ok(model) = config.get_string("anthropic.model") {
+        builder = builder.with_model(model);
+    }
+
+    builder.build()
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
     let mut rl = rustyline::DefaultEditor::new().unwrap();
 
     let settings = load_settings()?;
-    let api_key = settings
-        .get_string("anthropic.api_key")
-        .expect("api_key must be set");
-
-    let model = settings
-        .get_string("anthropic.model")
-        .unwrap_or("claude-3-5-haiku-20241022".to_owned());
+    let client = create_client(&settings)?;
 
     loop {
         let Some(line) = read_line(&mut rl)? else {
@@ -62,7 +73,7 @@ async fn main() -> Result<(), Error> {
 
         // Check to see if the entered text can be handled with one of the built in commands. This
         // is much faster, cheaper, and more accurate than feeding it to an AI agent for processing.
-        if let Some(command) = parse(line.as_str()) {
+        if let Some(command) = parse_command(line.as_str()) {
             match command {
                 DmCommand::Exit {} => {
                     println!("Good bye!");
@@ -83,26 +94,14 @@ async fn main() -> Result<(), Error> {
         // (until the agent actually works, just spit out the line)
         println!(">>> {}", line);
 
-        let request = reqwest::Client::new()
-            .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", api_key.as_str())
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&serde_json::json!({
-                "model": model.as_str(),
-                "max_tokens": 1024,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": line,
-                    }
-                ]
-            }));
-
-        println!("Request: {:?}", request);
-
-        let response = request.send().await?;
-        println!("Response: {:?}", response);
+        let response = client
+            .request(&serde_json::json!([
+                {
+                    "role": "user",
+                    "content": line,
+                }
+            ]))
+            .await?;
 
         let body = response.text().await?;
         println!("Body: {:?}", body);
