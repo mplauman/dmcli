@@ -39,7 +39,7 @@ fn load_settings() -> Result<Config, Error> {
         .map_err(|e| e.into())
 }
 
-fn create_client(config: &Config) -> Result<Client, Error> {
+async fn create_client(config: &Config) -> Result<Client, Error> {
     let mut builder = ClientBuilder::default().with_api_key(
         config
             .get_string("anthropic.api_key")
@@ -50,7 +50,7 @@ fn create_client(config: &Config) -> Result<Client, Error> {
         builder = builder.with_model(model);
     }
 
-    builder.build()
+    builder.build().await
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -58,7 +58,7 @@ async fn main() -> Result<(), Error> {
     let mut rl = rustyline::DefaultEditor::new().unwrap();
 
     let settings = load_settings()?;
-    let client = create_client(&settings)?;
+    let client = create_client(&settings).await?;
 
     loop {
         let Some(line) = read_line(&mut rl)? else {

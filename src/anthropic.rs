@@ -61,7 +61,7 @@ impl ClientBuilder {
         Self { model, ..self }
     }
 
-    pub fn build(self) -> Result<Client, Error> {
+    pub async fn build(self) -> Result<Client, Error> {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             "x-api-key",
