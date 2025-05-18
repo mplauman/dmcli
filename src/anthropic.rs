@@ -1,4 +1,5 @@
-use reqwest::Response;
+use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::errors::Error;
 use crate::tools::Toolkit;
@@ -7,19 +8,15 @@ pub struct Client {
     pub model: String,
     pub endpoint: String,
     pub client: reqwest::Client,
-    pub toolkits: Vec<Box<dyn Toolkit>>,
+    pub tools: HashMap<serde_json::Value, Rc<Box<dyn Toolkit>>>,
 }
 
 impl Client {
     pub async fn request<T: serde::Serialize + ?Sized>(
         &self,
         messages: &T,
-    ) -> Result<Response, Error> {
-        let tools: Vec<serde_json::Value> = self
-            .toolkits
-            .iter()
-            .flat_map(|tk| tk.list_tools())
-            .collect();
+    ) -> Result<String, Error> {
+        let tools = self.tools.keys().collect::<Vec<_>>();
 
         let request = self
             .client
@@ -42,7 +39,11 @@ impl Client {
         let response = self.client.execute(request).await?;
         println!("Response: {:?}", response);
 
-        Ok(response)
+        let body_bytes = response.bytes().await.unwrap();
+        let text = String::from_utf8(body_bytes.to_vec()).unwrap();
+        println!("Response body: {}", text);
+
+        Ok(text)
     }
 }
 
@@ -104,10 +105,22 @@ impl ClientBuilder {
                 .expect("content-type is an HTTP header"),
         );
 
+        let client_tools = self
+            .toolkits
+            .into_iter()
+            .flat_map(|tk| {
+                let tk = Rc::new(tk);
+
+                tk.list_tools()
+                    .into_iter()
+                    .map(move |t| (t, Rc::clone(&tk)))
+            })
+            .collect::<HashMap<_, _>>();
+
         let client = Client {
             model: self.model,
             endpoint: self.endpoint,
-            toolkits: self.toolkits,
+            tools: client_tools,
             client: reqwest::ClientBuilder::default()
                 .default_headers(headers)
                 .build()?,

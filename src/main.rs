@@ -113,8 +113,7 @@ async fn main() -> Result<(), Error> {
             ]))
             .await?;
 
-        let body = response.text().await?;
-        println!("Body: {:?}", body);
+        println!("Body: {}", response);
     }
 
     Ok(())
