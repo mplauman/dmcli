@@ -10,6 +10,8 @@ use crate::errors::Error;
 mod anthropic;
 mod commands;
 mod errors;
+mod obsidian;
+mod tools;
 
 fn read_line(readline: &mut rustyline::DefaultEditor) -> Result<Option<String>, Error> {
     match readline.readline(">> ") {
@@ -49,6 +51,14 @@ async fn create_client(config: &Config) -> Result<Client, Error> {
     if let Ok(model) = config.get_string("anthropic.model") {
         builder = builder.with_model(model);
     }
+
+    if let Ok(obsidian_vault) = config.get_string("local.obsidian_vault") {
+        let obsidian = crate::obsidian::LocalVaultBuilder::default()
+            .with_directory(obsidian_vault.into())
+            .build();
+
+        builder = builder.with_toolkit(obsidian);
+    };
 
     builder.build().await
 }
