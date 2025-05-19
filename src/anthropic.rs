@@ -1,14 +1,14 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 use crate::errors::Error;
-use crate::tools::Toolkit;
+use crate::tools::{Tool, Toolkit};
 
 pub struct Client {
     pub model: String,
     pub endpoint: String,
     pub client: reqwest::Client,
-    pub tools: HashMap<serde_json::Value, Rc<Box<dyn Toolkit>>>,
+    pub tools: HashMap<Tool, Rc<Box<dyn Toolkit>>>,
 }
 
 impl Client {
@@ -16,34 +16,88 @@ impl Client {
         &self,
         messages: &T,
     ) -> Result<String, Error> {
-        let tools = self.tools.keys().collect::<Vec<_>>();
+        let mut message_queue = VecDeque::<serde_json::Value>::default();
 
-        let request = self
-            .client
-            .post(self.endpoint.as_str())
-            .json(&serde_json::json!({
-                "model": self.model.as_str(),
-                "max_tokens": 1024,
-                "tools": tools,
-                "messages": messages,
-            }))
-            .build()?;
+        message_queue.push_back(serde_json::json!({
+            "model": self.model.as_str(),
+            "max_tokens": 1024,
+            "tools": self.tools.keys().map(|t| t.into()).collect::<Vec<serde_json::Value>>(),
+            "messages": messages,
+        }));
 
-        println!("Request: {:?}", request);
+        while let Some(message) = message_queue.pop_front() {
+            println!("Request: {:?}", message);
 
-        let body_bytes = request.body().unwrap().as_bytes().unwrap();
-        let text = String::from_utf8(body_bytes.to_vec()).unwrap();
+            let request = self
+                .client
+                .post(self.endpoint.as_str())
+                .json(&message)
+                .build()?;
 
-        println!("Request body: {}", text);
+            let response: ClaudeResponse = self
+                .client
+                .execute(request)
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
 
-        let response = self.client.execute(request).await?;
-        println!("Response: {:?}", response);
+            println!("Response: {:?}", response);
 
-        let body_bytes = response.bytes().await.unwrap();
-        let text = String::from_utf8(body_bytes.to_vec()).unwrap();
-        println!("Response body: {}", text);
+            match response.stop_reason {
+                Some(StopReason::EndTurn) => {
+                    return Ok(response
+                        .extract_message()
+                        .unwrap_or("<expected message not found>".to_owned()));
+                }
+                Some(StopReason::ToolUse) => {
+                    println!(
+                        ":thonking: {}",
+                        response
+                            .extract_message()
+                            .unwrap_or("<no tool message>".to_owned())
+                    );
 
-        Ok(text)
+                    message_queue.push_back(self.invoke_tool(response).await?);
+                }
+                Some(StopReason::StopSequence) => {
+                    println!(":panic: How do I handle this: {:?}", response);
+                    return Ok("<stop sequence hit>".to_owned());
+                }
+                Some(StopReason::MaxTokens) => {
+                    println!(":panic: How do I handle this: {:?}", response);
+                    return Ok("<max tokens reached>".to_owned());
+                }
+                None => {
+                    panic!("No stop reason was provided in {:?}", response);
+                }
+            };
+        }
+
+        Ok("<unexpected end of conversation>".to_owned())
+    }
+
+    async fn invoke_tool(&self, response: ClaudeResponse) -> Result<serde_json::Value, Error> {
+        let (id, name, params) = response
+            .content
+            .iter()
+            .find_map(|c| match c {
+                Content::ToolUse { id, name, input } => Some((id, name, input)),
+                _ => None,
+            })
+            .expect("a tool is provided for execution");
+
+        println!("Tool invocation {} on {}", id, name);
+        println!("Parameters: {:?}", params);
+
+        let _ = self
+            .tools
+            .iter()
+            .find_map(|t| if t.0.name == name { Some(t.1) } else { None })
+            .expect("a toolkit should exist");
+
+        todo!("this")
     }
 }
 
@@ -128,4 +182,128 @@ impl ClientBuilder {
 
         Ok(client)
     }
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct ClaudeResponse {
+    pub id: String,
+    pub r#type: String,
+    pub role: String,
+    pub model: String,
+    pub content: Vec<Content>,
+    pub stop_reason: Option<StopReason>,
+    pub stop_sequence: Option<String>,
+    pub usage: Usage,
+}
+
+impl ClaudeResponse {
+    fn extract_message(&self) -> Option<String> {
+        self.content.iter().find_map(|c| match c {
+            Content::Text { text } => Some(text.to_owned()),
+            _ => None,
+        })
+    }
+}
+
+#[derive(PartialEq, Eq, Debug, serde::Deserialize, serde::Serialize)]
+enum StopReason {
+    #[serde(rename = "end_turn")]
+    EndTurn,
+    #[serde(rename = "tool_use")]
+    ToolUse,
+    #[serde(rename = "stop_sequence")]
+    StopSequence,
+    #[serde(rename = "max_tokens")]
+    MaxTokens,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(tag = "type")]
+enum Content {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct Usage {
+    pub input_tokens: i64,
+    pub cache_creation_input_tokens: i64,
+    pub cache_read_input_tokens: i64,
+    pub output_tokens: i64,
+}
+
+#[test]
+fn test_message_claude_response_serde() {
+    let json = r#"{
+        "id": "msg_012J63SbcBy7BjHy5GijWvps",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-3-5-haiku-20241022",
+        "content": [
+            {
+                "type": "text",
+                "text": "Hi there! I'm an AI assistant designed to help with roleplaying game tools. I see there's a function available to retrieve session notes. Would you like me to fetch the dungeon master's local notes for you?"
+            }
+        ],
+        "stop_reason": "end_turn",
+        "stop_sequence": null,
+        "usage": {
+            "input_tokens": 324,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 49
+        }
+    }"#;
+
+    let response: ClaudeResponse = serde_json::from_str(json).unwrap_or_else(|e| panic!("{:?}", e));
+    assert_eq!(response.id, "msg_012J63SbcBy7BjHy5GijWvps");
+    assert_eq!(response.r#type, "message");
+    assert_eq!(response.role, "assistant");
+    assert_eq!(response.model, "claude-3-5-haiku-20241022");
+    assert_eq!(response.stop_reason.unwrap(), StopReason::EndTurn {});
+    assert_eq!(response.stop_sequence, None);
+}
+
+#[test]
+fn test_claude_response_serde() {
+    let json = r#"{
+        "id": "msg_01FQKQYzu89giYKxBAK4DGpt",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-3-5-haiku-20241022",
+        "content": [
+            {
+                "type": "text",
+                "text": "I'll retrieve the session notes for you using the get_session_notes function."
+            },
+            {
+                "type": "tool_use",
+                "id": "toolu_01CJBJNzCa1KCuqfwNbC9guo",
+                "name": "get_session_notes",
+                "input": {}
+            }
+        ],
+        "stop_reason": "tool_use",
+        "stop_sequence": null,
+        "usage": {
+            "input_tokens": 324,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 56
+        }
+    }"#;
+
+    let response: ClaudeResponse = serde_json::from_str(json).unwrap_or_else(|e| panic!("{:?}", e));
+    assert_eq!(response.id, "msg_01FQKQYzu89giYKxBAK4DGpt");
+    assert_eq!(response.r#type, "message");
+    assert_eq!(response.role, "assistant");
+    assert_eq!(response.model, "claude-3-5-haiku-20241022");
+    assert_eq!(response.stop_reason.unwrap(), StopReason::ToolUse {});
+    assert_eq!(response.stop_sequence, None);
 }

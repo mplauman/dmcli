@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::tools::Toolkit;
+use crate::tools::{Tool, Toolkit};
 
 pub struct LocalVault {
     vault: PathBuf,
@@ -28,16 +28,16 @@ impl LocalVault {
 }
 
 impl Toolkit for LocalVault {
-    fn list_tools(&self) -> Vec<serde_json::Value> {
-        vec![serde_json::json!({
-            "name": "get_session_notes",
-            "description": "Returns a list of the dungeon master's local notes",
-            "input_schema": {
+    fn list_tools(&self) -> Vec<Tool> {
+        vec![Tool {
+            name: "get_session_notes",
+            description: "Returns a list of the dungeon master's local notes",
+            input_schema: serde_json::json!({
                 "type": "object",
                 "parameters": {},
                 "required": [],
-            }
-        })]
+            }),
+        }]
     }
 }
 
