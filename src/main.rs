@@ -70,6 +70,8 @@ async fn main() -> Result<(), Error> {
     let settings = load_settings()?;
     let client = create_client(&settings).await?;
 
+    let mut ai_chat = Vec::<anthropic::Message>::new();
+
     loop {
         let Some(line) = read_line(&mut rl)? else {
             break;
@@ -104,14 +106,9 @@ async fn main() -> Result<(), Error> {
         // (until the agent actually works, just spit out the line)
         println!(">>> {}", line);
 
-        let response = client
-            .request(&serde_json::json!([
-                {
-                    "role": "user",
-                    "content": line,
-                }
-            ]))
-            .await?;
+        ai_chat.push(anthropic::Message::user(line));
+
+        let response = client.request(&mut ai_chat).await?;
 
         println!("Body: {}", response);
     }

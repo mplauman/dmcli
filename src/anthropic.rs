@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::errors::Error;
@@ -12,26 +12,20 @@ pub struct Client {
 }
 
 impl Client {
-    pub async fn request<T: serde::Serialize + ?Sized>(
-        &self,
-        messages: &T,
-    ) -> Result<String, Error> {
-        let mut message_queue = VecDeque::<serde_json::Value>::default();
-
-        message_queue.push_back(serde_json::json!({
-            "model": self.model.as_str(),
-            "max_tokens": 1024,
-            "tools": self.tools.keys().map(|t| t.into()).collect::<Vec<serde_json::Value>>(),
-            "messages": messages,
-        }));
-
-        while let Some(message) = message_queue.pop_front() {
-            println!("Request: {:?}", message);
+    pub async fn request(&self, messages: &mut Vec<Message>) -> Result<String, Error> {
+        loop {
+            let body = serde_json::json!({
+                "model": self.model.as_str(),
+                "max_tokens": 1024,
+                "tools": self.tools.keys().map(|t| t.into()).collect::<Vec<serde_json::Value>>(),
+                "messages": messages,
+            });
+            println!("Request: {:?}", body);
 
             let request = self
                 .client
                 .post(self.endpoint.as_str())
-                .json(&message)
+                .json(&body)
                 .build()?;
 
             let response: ClaudeResponse = self
@@ -47,7 +41,7 @@ impl Client {
 
             match response.stop_reason {
                 Some(StopReason::EndTurn) => {
-                    return Ok(response
+                    break Ok(response
                         .extract_message()
                         .unwrap_or("<expected message not found>".to_owned()));
                 }
@@ -59,26 +53,26 @@ impl Client {
                             .unwrap_or("<no tool message>".to_owned())
                     );
 
-                    message_queue.push_back(self.invoke_tool(response).await?);
+                    let (assistant, user) = self.invoke_tool(response).await?;
+                    messages.push(assistant);
+                    messages.push(user);
                 }
                 Some(StopReason::StopSequence) => {
                     println!(":panic: How do I handle this: {:?}", response);
-                    return Ok("<stop sequence hit>".to_owned());
+                    break Ok("<stop sequence hit>".to_owned());
                 }
                 Some(StopReason::MaxTokens) => {
                     println!(":panic: How do I handle this: {:?}", response);
-                    return Ok("<max tokens reached>".to_owned());
+                    break Ok("<max tokens reached>".to_owned());
                 }
                 None => {
                     panic!("No stop reason was provided in {:?}", response);
                 }
             };
         }
-
-        Ok("<unexpected end of conversation>".to_owned())
     }
 
-    async fn invoke_tool(&self, response: ClaudeResponse) -> Result<serde_json::Value, Error> {
+    async fn invoke_tool(&self, response: ClaudeResponse) -> Result<(Message, Message), Error> {
         let (id, name, params) = response
             .content
             .iter()
@@ -97,7 +91,26 @@ impl Client {
             .find_map(|t| if t.0.name == name { Some(t.1) } else { None })
             .expect("a toolkit should exist");
 
-        todo!("this")
+        let assistant = Message {
+            role: Role::Assistant,
+            content: vec![Content::ToolUse {
+                id: id.to_owned(),
+                name: name.to_owned(),
+                input: params.clone(),
+            }],
+        };
+
+        let user = Message {
+            role: Role::User,
+            content: vec![Content::ToolResult {
+                tool_use_id: id.to_owned(),
+                content: vec![Content::Text {
+                    text: "[\"dmg\", \"phb\", \"mm\"]".to_owned(),
+                }],
+            }],
+        };
+
+        Ok((assistant, user))
     }
 }
 
@@ -185,6 +198,30 @@ impl ClientBuilder {
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct Message {
+    role: Role,
+    content: Vec<Content>,
+}
+
+impl Message {
+    pub fn user(text: String) -> Message {
+        Message {
+            role: Role::User,
+            content: vec![Content::Text { text }],
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+enum Role {
+    #[serde(rename = "assistant")]
+    Assistant,
+
+    #[serde(rename = "user")]
+    User,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct ClaudeResponse {
     pub id: String,
     pub r#type: String,
@@ -227,6 +264,11 @@ enum Content {
         id: String,
         name: String,
         input: serde_json::Value,
+    },
+    #[serde(rename = "tool_result")]
+    ToolResult {
+        tool_use_id: String,
+        content: Vec<Content>,
     },
 }
 
