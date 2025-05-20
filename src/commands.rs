@@ -10,5 +10,6 @@ pub struct DmCli {
 #[derive(Subcommand, Debug)]
 pub enum DmCommand {
     Exit {},
+    Reset {},
     Roll { expressions: Vec<String> },
 }

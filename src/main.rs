@@ -91,6 +91,9 @@ async fn main() -> Result<(), Error> {
                     println!("Good bye!");
                     break;
                 }
+                DmCommand::Reset {} => {
+                    ai_chat.clear();
+                }
                 DmCommand::Roll { expressions } => {
                     println!("Rolling {:?}", expressions.join(" "));
                 }

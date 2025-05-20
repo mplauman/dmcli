@@ -47,6 +47,7 @@ impl LocalVault {
     fn read_markdown_file(&self, params: &serde_json::Value) -> serde_json::Value {
         let path = params["path"].as_str().expect("path is a string");
         let path = self.vault.join(path);
+
         let contents = std::fs::read_to_string(path).expect("failed to read file");
 
         serde_json::json!({
