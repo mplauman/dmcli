@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::VecDeque, path::PathBuf};
 
 use crate::tools::{Tool, Toolkit};
 
@@ -8,22 +8,40 @@ pub struct LocalVault {
 
 impl LocalVault {
     #[allow(dead_code)] // TODO
-    pub async fn list_vault_contents(&self) -> Vec<String> {
-        let entries = std::fs::read_dir(&self.vault).unwrap();
+    pub fn list_vault_contents(&self) -> serde_json::Value {
+        let mut to_scan = VecDeque::<PathBuf>::new();
+        to_scan.push_back(self.vault.clone());
+
         let mut files = Vec::new();
+        while let Some(path) = to_scan.pop_front() {
+            let entries = std::fs::read_dir(&path).unwrap();
 
-        for entry in entries {
-            let Ok(entry) = entry else {
-                continue;
-            };
-            let Ok(file_name) = entry.file_name().into_string() else {
-                continue;
-            };
+            for entry in entries {
+                let Ok(entry) = entry else {
+                    continue;
+                };
+                if entry
+                    .file_name()
+                    .to_str()
+                    .map(|it| it.starts_with("."))
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
 
-            files.push(file_name);
+                let entry_path = entry.path();
+                let path_string = entry_path.to_str().unwrap().to_owned();
+
+                if entry_path.is_dir() {
+                    to_scan.push_back(entry_path.clone());
+                    continue;
+                }
+
+                files.push(path_string);
+            }
         }
 
-        files
+        serde_json::json!(files)
     }
 }
 
@@ -38,6 +56,13 @@ impl Toolkit for LocalVault {
                 "required": [],
             }),
         }]
+    }
+
+    fn run_tool(&self, name: &str, _: &serde_json::Value) -> serde_json::Value {
+        match name {
+            "get_session_notes" => self.list_vault_contents(),
+            _ => panic!("don't know how to handle {}", name),
+        }
     }
 }
 

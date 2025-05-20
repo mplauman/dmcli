@@ -12,7 +12,7 @@ pub struct Client {
 }
 
 impl Client {
-    pub async fn request(&self, messages: &mut Vec<Message>) -> Result<String, Error> {
+    pub async fn request(&self, messages: &mut Vec<Message>) -> Result<(), Error> {
         loop {
             let body = serde_json::json!({
                 "model": self.model.as_str(),
@@ -20,7 +20,7 @@ impl Client {
                 "tools": self.tools.keys().map(|t| t.into()).collect::<Vec<serde_json::Value>>(),
                 "messages": messages,
             });
-            println!("Request: {:?}", body);
+            //println!("Request: {:?}", body);
 
             let request = self
                 .client
@@ -37,13 +37,17 @@ impl Client {
                 .await
                 .unwrap();
 
-            println!("Response: {:?}", response);
+            //println!("Response: {:?}", response);
 
             match response.stop_reason {
                 Some(StopReason::EndTurn) => {
-                    break Ok(response
-                        .extract_message()
-                        .unwrap_or("<expected message not found>".to_owned()));
+                    println!(
+                        "{}",
+                        response
+                            .extract_message()
+                            .unwrap_or("<expected message not found>".to_owned())
+                    );
+                    break;
                 }
                 Some(StopReason::ToolUse) => {
                     println!(
@@ -59,17 +63,19 @@ impl Client {
                 }
                 Some(StopReason::StopSequence) => {
                     println!(":panic: How do I handle this: {:?}", response);
-                    break Ok("<stop sequence hit>".to_owned());
+                    break;
                 }
                 Some(StopReason::MaxTokens) => {
                     println!(":panic: How do I handle this: {:?}", response);
-                    break Ok("<max tokens reached>".to_owned());
+                    break;
                 }
                 None => {
                     panic!("No stop reason was provided in {:?}", response);
                 }
             };
         }
+
+        Ok(())
     }
 
     async fn invoke_tool(&self, response: ClaudeResponse) -> Result<(Message, Message), Error> {
@@ -82,14 +88,13 @@ impl Client {
             })
             .expect("a tool is provided for execution");
 
-        println!("Tool invocation {} on {}", id, name);
-        println!("Parameters: {:?}", params);
-
-        let _ = self
+        let toolkit = self
             .tools
             .iter()
             .find_map(|t| if t.0.name == name { Some(t.1) } else { None })
             .expect("a toolkit should exist");
+
+        let response = toolkit.run_tool(name, params);
 
         let assistant = Message {
             role: Role::Assistant,
@@ -105,7 +110,7 @@ impl Client {
             content: vec![Content::ToolResult {
                 tool_use_id: id.to_owned(),
                 content: vec![Content::Text {
-                    text: "[\"dmg\", \"phb\", \"mm\"]".to_owned(),
+                    text: serde_json::to_string(&response).expect("response can be serialize"),
                 }],
             }],
         };

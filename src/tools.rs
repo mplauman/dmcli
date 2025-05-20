@@ -17,4 +17,5 @@ impl From<&Tool> for serde_json::Value {
 
 pub trait Toolkit {
     fn list_tools(&self) -> Vec<Tool>;
+    fn run_tool(&self, name: &str, params: &serde_json::Value) -> serde_json::Value;
 }

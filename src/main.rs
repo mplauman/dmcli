@@ -99,18 +99,8 @@ async fn main() -> Result<(), Error> {
             continue;
         }
 
-        // Anything that isn't specifically a command just gets fed to the AI agent. This can take
-        // a lot longer to deal with (and is more expensive) but is where the magic like "create an
-        // NPC with blue hair" type stuff works.
-        //
-        // (until the agent actually works, just spit out the line)
-        println!(">>> {}", line);
-
         ai_chat.push(anthropic::Message::user(line));
-
-        let response = client.request(&mut ai_chat).await?;
-
-        println!("Body: {}", response);
+        client.request(&mut ai_chat).await?;
     }
 
     Ok(())
