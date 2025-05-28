@@ -34,6 +34,8 @@ fn load_settings() -> Result<Config, Error> {
     let mut config_file = dirs::config_dir().expect("config dir should exist");
     config_file.push("dmcli.toml");
 
+    log::info!("Loading configuration from {}", config_file.display());
+
     Config::builder()
         .add_source(File::from(config_file))
         .add_source(Environment::with_prefix("DMCLI"))
@@ -49,10 +51,15 @@ async fn create_client(config: &Config) -> Result<Client, Error> {
     );
 
     if let Ok(model) = config.get_string("anthropic.model") {
+        log::info!("Overriding anthropic model to {}", model);
         builder = builder.with_model(model);
     }
 
     if let Ok(obsidian_vault) = config.get_string("local.obsidian_vault") {
+        log::info!(
+            "Adding tools for obsidian vault located at {}",
+            obsidian_vault
+        );
         let obsidian = crate::obsidian::LocalVaultBuilder::default()
             .with_directory(obsidian_vault.into())
             .build();
@@ -74,6 +81,7 @@ async fn main() -> Result<(), Error> {
 
     loop {
         let Some(line) = read_line(&mut rl)? else {
+            log::info!("No line read, exiting");
             break;
         };
 
@@ -86,6 +94,8 @@ async fn main() -> Result<(), Error> {
         // Check to see if the entered text can be handled with one of the built in commands. This
         // is much faster, cheaper, and more accurate than feeding it to an AI agent for processing.
         if let Some(command) = parse_command(line.as_str()) {
+            log::info!("Line appears to be a paseable command: {}", line);
+
             match command {
                 DmCommand::Exit {} => {
                     println!("Good bye!");
@@ -102,9 +112,11 @@ async fn main() -> Result<(), Error> {
             continue;
         }
 
+        log::info!("Sending line to AI agent");
         ai_chat.push(anthropic::Message::user(line));
         client.request(&mut ai_chat).await?;
     }
 
+    log::info!("Exiting cleanly");
     Ok(())
 }

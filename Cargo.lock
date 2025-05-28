@@ -197,6 +197,7 @@ dependencies = [
  "clap",
  "config",
  "dirs",
+ "log",
  "reqwest",
  "rustyline",
  "serde",
