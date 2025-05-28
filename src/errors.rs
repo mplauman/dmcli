@@ -18,3 +18,21 @@ impl From<reqwest::Error> for Error {
         panic!("Don't know how to handle {:?}", error);
     }
 }
+
+impl From<opentelemetry_otlp::ExporterBuildError> for Error {
+    fn from(error: opentelemetry_otlp::ExporterBuildError) -> Self {
+        panic!("Don't know how to handle {:?}", error);
+    }
+}
+
+impl From<log::SetLoggerError> for Error {
+    fn from(error: log::SetLoggerError) -> Self {
+        panic!("Don't know how to handle {:?}", error);
+    }
+}
+
+impl From<syslog::Error> for Error {
+    fn from(error: syslog::Error) -> Self {
+        panic!("Don't know how to handle {:?}", error);
+    }
+}

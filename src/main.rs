@@ -10,6 +10,7 @@ use crate::errors::Error;
 mod anthropic;
 mod commands;
 mod errors;
+mod logger;
 mod obsidian;
 mod tools;
 
@@ -41,6 +42,52 @@ fn load_settings() -> Result<Config, Error> {
         .add_source(Environment::with_prefix("DMCLI"))
         .build()
         .map_err(|e| e.into())
+}
+
+fn init_logging(settings: &Config) -> Result<(), Error> {
+    let mut aggregate_log_builder = crate::logger::AggregateLoggerBuilder::default();
+
+    if let Ok(true) = settings.get_bool("logging.opentelemetry") {
+        use opentelemetry_appender_log::OpenTelemetryLogBridge;
+        use opentelemetry_otlp::LogExporter;
+        use opentelemetry_sdk::logs::{BatchLogProcessor, SdkLoggerProvider};
+
+        let log_exporter = LogExporter::builder().with_http().build()?;
+        let log_processor = BatchLogProcessor::builder(log_exporter).build();
+
+        let logger_provider = SdkLoggerProvider::builder()
+            .with_log_processor(log_processor)
+            .build();
+
+        let otel_log_appender = OpenTelemetryLogBridge::new(&logger_provider);
+        aggregate_log_builder = aggregate_log_builder.with(otel_log_appender);
+    }
+
+    if let Ok(true) = settings.get_bool("logging.syslog") {
+        let formatter = syslog::Formatter3164::default();
+        let logger = syslog::unix(formatter)?;
+
+        let logger = syslog::BasicLogger::new(logger);
+
+        aggregate_log_builder = aggregate_log_builder.with(logger);
+    }
+
+    log::set_boxed_logger(Box::new(aggregate_log_builder.build()))?;
+
+    match settings
+        .get_string("logging.level")
+        .as_ref()
+        .map(|s| s.as_str())
+    {
+        Ok("info") => log::set_max_level(log::LevelFilter::Info),
+        Ok("warn") => log::set_max_level(log::LevelFilter::Warn),
+        Ok("error") => log::set_max_level(log::LevelFilter::Error),
+        Ok("debug") => log::set_max_level(log::LevelFilter::Debug),
+        Ok("trace") => log::set_max_level(log::LevelFilter::Trace),
+        _ => log::set_max_level(log::LevelFilter::Info),
+    }
+
+    Ok(())
 }
 
 async fn create_client(config: &Config) -> Result<Client, Error> {
@@ -75,6 +122,8 @@ async fn main() -> Result<(), Error> {
     let mut rl = rustyline::DefaultEditor::new().unwrap();
 
     let settings = load_settings()?;
+    init_logging(&settings)?;
+
     let client = create_client(&settings).await?;
 
     let mut ai_chat = Vec::<anthropic::Message>::new();
