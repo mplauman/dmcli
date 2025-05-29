@@ -55,6 +55,8 @@ impl Client {
                 "messages": messages,
             });
 
+            log::trace!("AGENT REQUEST >>> {}", serde_json::to_string(&body)?);
+
             let request = self
                 .client
                 .post(self.endpoint.as_str())
@@ -70,7 +72,7 @@ impl Client {
                 .await
                 .unwrap();
 
-            //println!("Response: {:?}", response);
+            log::trace!("AGENT RESPONSE <<< {}", serde_json::to_string(&response)?);
 
             match response.stop_reason {
                 Some(StopReason::EndTurn) => {
