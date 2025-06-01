@@ -42,3 +42,9 @@ impl From<serde_json::Error> for Error {
         panic!("Don't know how to handle {:?}", error);
     }
 }
+
+impl From<rmcp::ServiceError> for Error {
+    fn from(error: rmcp::ServiceError) -> Self {
+        panic!("Don't know how to handle {:?}", error);
+    }
+}

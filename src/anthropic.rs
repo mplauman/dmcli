@@ -1,8 +1,12 @@
-use std::collections::HashMap;
-use std::rc::Rc;
-
 use crate::errors::Error;
-use crate::tools::{Tool, Toolkit};
+
+use rmcp::{
+    RoleClient, RoleServer, Service, ServiceExt,
+    model::{CallToolRequestParam, CallToolResult, RawContent},
+    service::{DynService, RunningService},
+};
+
+type McpClient = RunningService<RoleClient, Box<dyn DynService<RoleClient> + 'static>>;
 
 static SYSTEM_PROMPT: &str = "
 You are a dungeon master's helpful assistant. You're role is to help them search through their notes to
@@ -41,7 +45,8 @@ pub struct Client {
     pub model: String,
     pub endpoint: String,
     pub client: reqwest::Client,
-    pub tools: HashMap<Tool, Rc<Box<dyn Toolkit>>>,
+    pub mcp_clients: Vec<McpClient>,
+    pub tools: Vec<serde_json::Value>,
 }
 
 impl Client {
@@ -51,11 +56,11 @@ impl Client {
                 "model": self.model.as_str(),
                 "max_tokens": 1024,
                 "system": SYSTEM_PROMPT,
-                "tools": self.tools.keys().map(|t| t.into()).collect::<Vec<serde_json::Value>>(),
+                "tools": self.tools,
                 "messages": messages,
             });
 
-            log::trace!("AGENT REQUEST >>> {}", serde_json::to_string(&body)?);
+            log::debug!("AGENT REQUEST >>> {}", serde_json::to_string(&body)?);
 
             let request = self
                 .client
@@ -72,7 +77,7 @@ impl Client {
                 .await
                 .unwrap();
 
-            log::trace!("AGENT RESPONSE <<< {}", serde_json::to_string(&response)?);
+            log::debug!("AGENT RESPONSE <<< {}", serde_json::to_string(&response)?);
 
             match response.stop_reason {
                 Some(StopReason::EndTurn) => {
@@ -118,18 +123,43 @@ impl Client {
             .content
             .iter()
             .find_map(|c| match c {
-                Content::ToolUse { id, name, input } => Some((id, name, input)),
+                Content::ToolUse { id, name, input } => {
+                    Some((id.to_owned(), name.to_owned(), input))
+                }
                 _ => None,
             })
             .expect("a tool is provided for execution");
 
-        let toolkit = self
-            .tools
-            .iter()
-            .find_map(|t| if t.0.name == name { Some(t.1) } else { None })
-            .expect("a toolkit should exist");
+        log::info!(
+            "Handling tool invocation {} on {}: {}",
+            id,
+            name,
+            serde_json::to_string(&params)?
+        );
 
-        let response = toolkit.run_tool(name, params);
+        let mut contents = Vec::<Content>::default();
+        for mcp_client in self.mcp_clients.iter() {
+            let request_param = CallToolRequestParam {
+                name: name.clone().into(),
+                arguments: match params {
+                    serde_json::Value::Object(o) => Some(o.clone()),
+                    x => {
+                        log::warn!("Unexpected tool parameters {:?}", x);
+                        None
+                    }
+                },
+            };
+
+            let request_result: CallToolResult = mcp_client.call_tool(request_param).await?;
+
+            for result_content in request_result.content {
+                match result_content.raw {
+                    RawContent::Text(t) => contents.push(Content::Text { text: t.text }),
+                    RawContent::Image(i) => panic!("got image {:?}", i),
+                    RawContent::Resource(r) => panic!("got resource {:?}", r),
+                }
+            }
+        }
 
         let assistant = Message {
             role: Role::Assistant,
@@ -144,11 +174,11 @@ impl Client {
             role: Role::User,
             content: vec![Content::ToolResult {
                 tool_use_id: id.to_owned(),
-                content: vec![Content::Text {
-                    text: serde_json::to_string(&response).expect("response can be serialize"),
-                }],
+                content: contents,
             }],
         };
+
+        log::debug!("Tool response: {}", serde_json::to_string(&user).unwrap());
 
         Ok((assistant, user))
     }
@@ -159,7 +189,7 @@ pub struct ClientBuilder {
     pub model: String,
     pub version: String,
     pub endpoint: String,
-    pub toolkits: Vec<Box<dyn Toolkit>>,
+    pub mcp_clients: Vec<McpClient>,
 }
 
 impl Default for ClientBuilder {
@@ -169,7 +199,7 @@ impl Default for ClientBuilder {
             model: "claude-3-5-haiku-20241022".to_owned(),
             version: "2023-06-01".to_owned(),
             endpoint: "https://api.anthropic.com/v1/messages".to_owned(),
-            toolkits: Default::default(),
+            mcp_clients: Default::default(),
         }
     }
 }
@@ -185,11 +215,18 @@ impl ClientBuilder {
         Self { model, ..self }
     }
 
-    pub fn with_toolkit<T: crate::tools::Toolkit + 'static>(self, toolkit: T) -> Self {
-        let mut toolkits = self.toolkits;
-        toolkits.push(Box::new(toolkit));
+    pub async fn with_toolkit<T: Service<RoleServer> + Send + 'static>(self, toolkit: T) -> Self {
+        let server = rmcp_in_process_transport::in_process::TokioInProcess::new(toolkit);
+        let server = server.serve().await.unwrap();
+        let server = ().into_dyn().serve(server).await.unwrap();
 
-        Self { toolkits, ..self }
+        let mut mcp_clients = self.mcp_clients;
+        mcp_clients.push(server);
+
+        Self {
+            mcp_clients,
+            ..self
+        }
     }
 
     pub async fn build(self) -> Result<Client, Error> {
@@ -212,22 +249,30 @@ impl ClientBuilder {
                 .expect("content-type is an HTTP header"),
         );
 
-        let client_tools = self
-            .toolkits
-            .into_iter()
-            .flat_map(|tk| {
-                let tk = Rc::new(tk);
+        let mut tools = Vec::<serde_json::Value>::default();
+        for mcp_client in self.mcp_clients.iter() {
+            let tools_response = mcp_client.list_all_tools().await?;
 
-                tk.list_tools()
-                    .into_iter()
-                    .map(move |t| (t, Rc::clone(&tk)))
-            })
-            .collect::<HashMap<_, _>>();
+            for tool in tools_response {
+                tools.push(serde_json::json!({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "input_schema": {
+                        "type": "object",
+                        "properties": tool.input_schema["properties"],
+                        "required": tool.input_schema.get("required").or(Default::default()),
+                    },
+                }));
+            }
+        }
+
+        log::info!("Added tools: {}", serde_json::to_string(&tools).unwrap());
 
         let client = Client {
+            tools,
             model: self.model,
             endpoint: self.endpoint,
-            tools: client_tools,
+            mcp_clients: self.mcp_clients,
             client: reqwest::ClientBuilder::default()
                 .default_headers(headers)
                 .build()?,

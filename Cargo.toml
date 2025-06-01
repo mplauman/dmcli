@@ -12,14 +12,21 @@ config = { version = "0.15.11", default-features = false, features = ["toml"] }
 dirs = { version = "6.0.0", default-features = false }
 log = { version = "0.4.27", default-features = false }
 opentelemetry-appender-log = { version = "0.30.0", default-features = false }
-opentelemetry-otlp = { version = "0.30.0", default-features = false, features = ["logs", "http-proto"] }
+opentelemetry-otlp = { version = "0.30.0", default-features = false, features = [
+    "logs",
+    "http-proto",
+] }
 opentelemetry_sdk = { version = "0.30.0", default-features = false }
 reqwest = { version = "0.12.15", default-features = false, features = [
     "json",
     "native-tls",
 ] }
+rmcp = { version = "0.1.5", default-features = false }
+rmcp-in-process-transport = { version = "0.0.2", default-features = false }
 rustyline = { version = "15.0.0", default-features = false }
-serde = { version = "1.0.219", default-features = false, features = ["serde_derive"] }
+serde = { version = "1.0.219", default-features = false, features = [
+    "serde_derive",
+] }
 serde_json = { version = "1.0.140", default-features = false, features = [
     "std",
 ] }
