@@ -18,16 +18,16 @@ the dungeon master's session notes.
 
 1. Keep your responses short. Avoid unnecessary details or tangents.
 2. Don't apologize if you're unable to do something. Do your best, and explain why if you are unable to proceed.
-3. If appropriate, use tool calls to explore the DM's notes.
+3. As much as possible, base your answers on the DM's notes. Read multiple files to gain context.
 4. Bias towards not asking the user for help if you can find the answer yourself.
 5. When providing paths to tools, the path should always begin with a path that starts with a project root directory listed above.
 6. Before you read or edit a file, you must first find the full path. DO NOT ever guess a file path!
 
-You are being tasked with providing a response, but you have no ability to use tools or to read or write any aspect of the user's system (other than any context the user might have provided to you).
+## Searching Notes
 
-As such, if you need the user to perform any actions for you, you must request them explicitly. Bias towards giving a response to the best of your ability, and then making requests for the user to take action (e.g. to give you more context) only optionally.
-
-The one exception to this is if the user references something you don't know about - for example, the name of a source code file, function, type, or other piece of code that you have no awareness of. In this case, you MUST NOT MAKE SOMETHING UP, or assume you know what that thing is or how it works. Instead, you must ask the user for clarification rather than giving a response.
+When searching through notes, first get a list of all the potentially interesting files by listing them, grepping through
+them, or both. When you have a list of candidates, read their contents and use that to inform your answer. Most of the time
+the information you will need is spread through multiple files.
 
 ## Monster Generation
 
@@ -47,6 +47,7 @@ pub struct Client {
     pub client: reqwest::Client,
     pub mcp_clients: Vec<McpClient>,
     pub tools: Vec<serde_json::Value>,
+    pub max_tokens: i64,
 }
 
 impl Client {
@@ -54,7 +55,7 @@ impl Client {
         loop {
             let body = serde_json::json!({
                 "model": self.model.as_str(),
-                "max_tokens": 1024,
+                "max_tokens": self.max_tokens,
                 "system": SYSTEM_PROMPT,
                 "tools": self.tools,
                 "messages": messages,
@@ -187,6 +188,7 @@ pub struct ClientBuilder {
     pub version: String,
     pub endpoint: String,
     pub mcp_clients: Vec<McpClient>,
+    pub max_tokens: i64,
 }
 
 impl Default for ClientBuilder {
@@ -195,6 +197,7 @@ impl Default for ClientBuilder {
             api_key: None,
             model: "claude-3-5-haiku-20241022".to_owned(),
             version: "2023-06-01".to_owned(),
+            max_tokens: 16384,
             endpoint: "https://api.anthropic.com/v1/messages".to_owned(),
             mcp_clients: Default::default(),
         }
@@ -210,6 +213,10 @@ impl ClientBuilder {
 
     pub fn with_model(self, model: String) -> Self {
         Self { model, ..self }
+    }
+
+    pub fn with_max_tokens(self, max_tokens: i64) -> Self {
+        Self { max_tokens, ..self }
     }
 
     pub async fn with_toolkit<T: Service<RoleServer> + Send + 'static>(self, toolkit: T) -> Self {
@@ -256,7 +263,7 @@ impl ClientBuilder {
                     "description": tool.description,
                     "input_schema": {
                         "type": "object",
-                        "properties": tool.input_schema["properties"],
+                        "properties": tool.input_schema.get("properties").or(Default::default()),
                         "required": tool.input_schema.get("required").or(Default::default()),
                     },
                 }));
@@ -270,6 +277,7 @@ impl ClientBuilder {
             model: self.model,
             endpoint: self.endpoint,
             mcp_clients: self.mcp_clients,
+            max_tokens: self.max_tokens,
             client: reqwest::ClientBuilder::default()
                 .default_headers(headers)
                 .build()?,

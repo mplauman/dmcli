@@ -9,32 +9,20 @@ use rmcp::{
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct GrepRequest {
     #[schemars(
-        description = "a case insensitive pattern to search for. this is a regular expression pattern used to search for
-        matches within files. Do not include line endings, quotes, slashes, or escape characters in your pattern. The
-        regular expression should be restricted to simple pattern matching like \".*abc.*\" for matching any text
-        containing 'abc'. Complex lookbehind/lookahead patterns are not supported. Example pattern: 'test.*file' would
-        match 'test-file' and 'testing file'. Please provide only a valid regularexpression."
+        description = "a case insensitive pattern to search for. this IS NOT a regular expression. provide only the
+       exact string to search for."
     )]
     pub query: String,
-
-    #[schemars(
-        description = "the location to search. it can be either a directory or a filename. if this is left out then the
-        entire vault will be searched."
-    )]
-    pub search_path: Option<String>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
-pub struct ListFilesRequest {
-    #[schemars(
-        description = "the directory to start listing from. defaults to the vault root if this is left unset."
-    )]
-    pub directory: Option<String>,
-}
+pub struct ListFilesRequest {}
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct ReadTextFileRequest {
-    #[schemars(description = "the fully qualified name of the file to read")]
+    #[schemars(
+        description = "the fully qualified name of the file to read. this should *only* be a file that exists in the vault. do not guess filenames."
+    )]
     pub filename: String,
 }
 
@@ -51,12 +39,8 @@ impl Obsidian {
 
     /// Recursively find a list of files in a directory. If a directory is not provided then
     /// the entire vault will be listed.
-    fn internal_list_files(&self, directory: Option<String>) -> Vec<PathBuf> {
-        let directory = directory.map(PathBuf::from).unwrap_or(self.vault.clone());
-
-        log::info!("Listing files starting from {}", directory.display());
-
-        let walk = ignore::WalkBuilder::new(directory)
+    fn internal_list_files(&self) -> Vec<PathBuf> {
+        let walk = ignore::WalkBuilder::new(&self.vault)
             .hidden(false)
             .standard_filters(true)
             .follow_links(true)
@@ -74,12 +58,10 @@ impl Obsidian {
                 continue;
             };
 
-            if file_type.is_dir() {
-                continue;
+            if !file_type.is_dir() {
+                let path = entry.path();
+                files.push(path.into());
             }
-
-            let path = entry.path();
-            files.push(path.into());
         }
 
         files
@@ -92,9 +74,9 @@ impl Obsidian {
     )]
     pub fn list_files(
         &self,
-        #[tool(aggr)] ListFilesRequest { directory }: ListFilesRequest,
+        #[tool(aggr)] ListFilesRequest {}: ListFilesRequest,
     ) -> Result<CallToolResult, rmcp::Error> {
-        let files = self.internal_list_files(directory);
+        let files = self.internal_list_files();
         let result = serde_json::json!(files);
 
         Ok(CallToolResult::success(vec![Content::json(result)?]))
@@ -106,14 +88,14 @@ impl Obsidian {
     )]
     pub fn grep(
         &self,
-        #[tool(aggr)] GrepRequest { query, search_path }: GrepRequest,
+        #[tool(aggr)] GrepRequest { query }: GrepRequest,
     ) -> Result<CallToolResult, rmcp::Error> {
         use grep::{
             regex::RegexMatcherBuilder,
             searcher::{Encoding, SearcherBuilder, sinks::Bytes},
         };
 
-        log::info!("Searching for {} in {:?}", query, search_path,);
+        log::info!("Searching for {}", query);
 
         let matcher = RegexMatcherBuilder::new()
             .case_insensitive(true)
@@ -129,7 +111,7 @@ impl Obsidian {
         let mut matching_files = Vec::<String>::new();
 
         // if this is a directory then find all the files. otherwise just read the file
-        for path in self.internal_list_files(search_path) {
+        for path in self.internal_list_files() {
             let sink = Bytes(|lnum, _bytes| {
                 log::info!("Found match in {}, line {}", path.display(), lnum);
 

@@ -101,6 +101,11 @@ async fn create_client(config: &Config) -> Result<Client, Error> {
         builder = builder.with_model(model);
     }
 
+    if let Ok(max_tokens) = config.get_int("anthropic.max_tokens") {
+        log::info!("Overriding anthropic max tokens to {}", max_tokens);
+        builder = builder.with_max_tokens(max_tokens)
+    }
+
     if let Ok(obsidian_vault) = config.get_string("local.obsidian_vault") {
         log::info!(
             "Adding tools for obsidian vault located at {}",
