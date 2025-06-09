@@ -157,7 +157,11 @@ async fn main() -> Result<(), Error> {
                     ai_chat.clear();
                 }
                 DmCommand::Roll { expressions } => {
-                    println!("Rolling {:?}", expressions.join(" "));
+                    let result = caith::Roller::new(&expressions.join(" "))
+                        .unwrap()
+                        .roll()
+                        .unwrap();
+                    println!("{}", result);
                 }
             }
 

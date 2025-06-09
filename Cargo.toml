@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+caith = { version = "4.2.4", default-features = false }
 clap = { version = "4.5.38", default-features = false, features = [
     "derive",
     "std",
