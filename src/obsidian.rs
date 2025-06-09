@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, path::PathBuf};
+use std::path::PathBuf;
 
 use rmcp::{
     ServerHandler,
@@ -8,27 +8,28 @@ use rmcp::{
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct GrepRequest {
-    #[schemars(description = "the pattern to search for.")]
+    #[schemars(
+        description = "a case insensitive pattern to search for. this is a regular expression pattern used to search for
+        matches within files. Do not include line endings, quotes, slashes, or escape characters in your pattern. The
+        regular expression should be restricted to simple pattern matching like \".*abc.*\" for matching any text
+        containing 'abc'. Complex lookbehind/lookahead patterns are not supported. Example pattern: 'test.*file' would
+        match 'test-file' and 'testing file'. Please provide only a valid regularexpression."
+    )]
     pub query: String,
 
     #[schemars(
-        description = "the location to search. it can be either a directory or a filename."
+        description = "the location to search. it can be either a directory or a filename. if this is left out then the
+        entire vault will be searched."
     )]
-    pub search_path: String,
-
-    #[schemars(description = "whether to search recursively or not.")]
-    pub recursive: bool,
+    pub search_path: Option<String>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct ListFilesRequest {
     #[schemars(
-        description = "the directory to start listing from. if unset or blank the entire vault contents will be returned"
+        description = "the directory to start listing from. defaults to the vault root if this is left unset."
     )]
     pub directory: Option<String>,
-
-    #[schemars(description = "whether to search recursively or not. defaults to 'false' if unset")]
-    pub recursive: Option<bool>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -48,125 +49,97 @@ impl Obsidian {
         Self { vault }
     }
 
-    #[tool(
-        description = "list all the files in a directory. returned directories will end in a trailin"
-    )]
-    pub fn list_vaule(
-        &self,
-        #[tool(aggr)] ListFilesRequest {
-            directory,
-            recursive,
-        }: ListFilesRequest,
-    ) -> Result<CallToolResult, rmcp::Error> {
-        let mut to_scan = VecDeque::<PathBuf>::new();
-        to_scan.push_back(directory.map(PathBuf::from).unwrap_or(self.vault.clone()));
+    /// Recursively find a list of files in a directory. If a directory is not provided then
+    /// the entire vault will be listed.
+    fn internal_list_files(&self, directory: Option<String>) -> Vec<PathBuf> {
+        let directory = directory.map(PathBuf::from).unwrap_or(self.vault.clone());
 
-        let mut files = Vec::<String>::new();
-        while let Some(path) = to_scan.pop_front() {
-            let entries = std::fs::read_dir(&path).unwrap();
+        log::info!("Listing files starting from {}", directory.display());
 
-            for entry in entries {
-                let Ok(entry) = entry else {
-                    continue;
-                };
-                if entry
-                    .file_name()
-                    .to_str()
-                    .map(|it| it.starts_with("."))
-                    .unwrap_or(false)
-                {
-                    continue;
-                }
+        let walk = ignore::WalkBuilder::new(directory)
+            .hidden(false)
+            .standard_filters(true)
+            .follow_links(true)
+            .build();
 
-                let entry_path = entry.path();
-                let path_string = entry_path.to_str().unwrap().to_owned();
+        let mut files = Vec::<PathBuf>::new();
+        for result in walk {
+            let Ok(entry) = result else {
+                log::warn!("Failed to read {:?}", result);
+                continue;
+            };
 
-                if entry_path.is_dir() {
-                    if recursive.unwrap_or(false) {
-                        to_scan.push_back(entry_path.clone());
-                    }
+            let Some(file_type) = entry.file_type() else {
+                log::warn!("Failed to get file type from {:?}", entry);
+                continue;
+            };
 
-                    files.push(path_string + "/");
-                } else {
-                    files.push(path_string);
-                }
+            if file_type.is_dir() {
+                continue;
             }
+
+            let path = entry.path();
+            files.push(path.into());
         }
 
+        files
+    }
+
+    #[tool(
+        description = "recursively lists all files in a directory. if provided a path, this will list all files
+        within that path recursively. if no path is provided, this will list all files starting from the vault
+        root. the returned values are absolute paths to the matching files."
+    )]
+    pub fn list_files(
+        &self,
+        #[tool(aggr)] ListFilesRequest { directory }: ListFilesRequest,
+    ) -> Result<CallToolResult, rmcp::Error> {
+        let files = self.internal_list_files(directory);
         let result = serde_json::json!(files);
 
         Ok(CallToolResult::success(vec![Content::json(result)?]))
     }
 
     #[tool(
-        description = "search through files and folders for a pattern. returns a list of files that include the requested pattern."
+        description = "search through files and folders for a pattern. returns a
+        list of files that include the requested pattern."
     )]
     pub fn grep(
         &self,
-        #[tool(aggr)] GrepRequest {
-            query,
-            search_path,
-            recursive,
-        }: GrepRequest,
+        #[tool(aggr)] GrepRequest { query, search_path }: GrepRequest,
     ) -> Result<CallToolResult, rmcp::Error> {
-        log::info!(
-            "Searching for {} in {} (recursive: {})",
-            query,
-            search_path,
-            recursive
-        );
+        use grep::{
+            regex::RegexMatcherBuilder,
+            searcher::{Encoding, SearcherBuilder, sinks::Bytes},
+        };
 
-        let mut to_scan = VecDeque::<PathBuf>::new();
-        to_scan.push_back(self.vault.join(search_path));
+        log::info!("Searching for {} in {:?}", query, search_path,);
+
+        let matcher = RegexMatcherBuilder::new()
+            .case_insensitive(true)
+            .fixed_strings(true)
+            .build(&query)
+            .expect("the regex will work");
+
+        let mut searcher = SearcherBuilder::new()
+            .line_number(true)
+            .encoding(Some(Encoding::new("UTF-8").unwrap()))
+            .build();
 
         let mut matching_files = Vec::<String>::new();
 
-        while let Some(path) = to_scan.pop_front() {
-            if path.is_file() {
-                let Ok(contents) = std::fs::read_to_string(&path) else {
-                    log::info!("Failed to read text from {}, skipping", path.display());
-                    continue;
-                };
+        // if this is a directory then find all the files. otherwise just read the file
+        for path in self.internal_list_files(search_path) {
+            let sink = Bytes(|lnum, _bytes| {
+                log::info!("Found match in {}, line {}", path.display(), lnum);
 
-                if !contents.contains(&query) {
-                    continue;
-                }
+                matching_files.push(path.to_string_lossy().to_string());
+                Ok(false)
+            });
 
-                let Ok(relative_path) = path.strip_prefix(&self.vault) else {
-                    log::info!("Failed to extract relative path from {}", path.display());
-                    continue;
-                };
-
-                matching_files.push(relative_path.to_str().unwrap().to_owned());
-                continue;
-            }
-
-            if !recursive {
-                continue;
-            }
-
-            if !path.is_dir() {
-                log::warn!("Skipping non-directory: {}", path.display());
-                continue;
-            }
-
-            let entries = std::fs::read_dir(&path).unwrap();
-            for entry in entries {
-                let Ok(entry) = entry else {
-                    continue;
-                };
-
-                if entry
-                    .file_name()
-                    .to_str()
-                    .map(|it| it.starts_with("."))
-                    .unwrap_or(false)
-                {
-                    continue;
-                }
-
-                to_scan.push_back(entry.path());
-            }
+            searcher
+                .search_path(&matcher, &path, sink)
+                .expect("the search works");
         }
 
         log::info!(
@@ -181,15 +154,14 @@ impl Obsidian {
     }
 
     #[tool(
-        description = "read the contents of a text file. this should only be used for files that contain text, such as markdown (.md) or text (.txt)"
+        description = "read the contents of a text file. this should only be used for files that
+        contain text, such as markdown (.md) or text (.txt)"
     )]
     pub fn read_text_file(
         &self,
         #[tool(aggr)] ReadTextFileRequest { filename }: ReadTextFileRequest,
     ) -> Result<CallToolResult, rmcp::Error> {
-        let path = self.vault.join(filename);
-
-        let contents = std::fs::read_to_string(path).expect("failed to read file");
+        let contents = std::fs::read_to_string(filename).expect("failed to read file");
         let result = CallToolResult::success(vec![Content::text(contents)]);
 
         Ok(result)

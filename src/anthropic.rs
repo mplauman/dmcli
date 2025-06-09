@@ -130,12 +130,7 @@ impl Client {
             })
             .expect("a tool is provided for execution");
 
-        log::info!(
-            "Handling tool invocation {} on {}: {}",
-            id,
-            name,
-            serde_json::to_string(&params)?
-        );
+        log::info!("Handling tool invocation {} on {}: {:#?}", id, name, params);
 
         let mut contents = Vec::<Content>::default();
         for mcp_client in self.mcp_clients.iter() {
@@ -160,6 +155,8 @@ impl Client {
                 }
             }
         }
+
+        log::debug!("Tool response: {:#?}", contents);
 
         let assistant = Message {
             role: Role::Assistant,

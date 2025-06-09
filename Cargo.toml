@@ -10,6 +10,8 @@ clap = { version = "4.5.38", default-features = false, features = [
 ] }
 config = { version = "0.15.11", default-features = false, features = ["toml"] }
 dirs = { version = "6.0.0", default-features = false }
+grep = { version = "0.3.2", default-features = false }
+ignore = { version = "0.4.23", default-features = false }
 log = { version = "0.4.27", default-features = false }
 opentelemetry-appender-log = { version = "0.30.0", default-features = false }
 opentelemetry-otlp = { version = "0.30.0", default-features = false, features = [
