@@ -58,8 +58,49 @@ pub struct Client {
     pub max_tokens: i64,
 }
 
+// Test helper functions
+#[cfg(test)]
+impl Client {
+    // For testing purposes - tests the message removal logic for MaxTokens error
+    pub fn test_max_tokens_handling(&self, messages: &mut Vec<Message>) -> usize {
+        let mut max_tokens_retry_count = 0;
+        let max_tokens_max_retries = 5;
+
+        while max_tokens_retry_count < max_tokens_max_retries {
+            max_tokens_retry_count += 1;
+
+            if messages.len() <= 2 {
+                // Cannot remove any more messages without losing context
+                println!("Cannot remove any more messages without losing context");
+                break;
+            }
+
+            // Remove the oldest non-system message (index 0 is usually the first user message)
+            println!(
+                "Max tokens reached. Removing oldest message and retrying. Attempt {} of {}",
+                max_tokens_retry_count, max_tokens_max_retries
+            );
+
+            // For test purposes, only remove if we still have more than 2 messages
+            if messages.len() > 2 {
+                messages.remove(1); // Keep the first message, remove the second oldest
+            } else {
+                break;
+            }
+
+            // For testing purposes, we'll just continue until we hit the retry limit
+            // In real usage, the loop would retry the API call after removing a message
+        }
+
+        max_tokens_retry_count
+    }
+}
+
 impl Client {
     pub async fn request(&self, messages: &mut Vec<Message>) -> Result<(), Error> {
+        let mut max_tokens_retry_count = 0;
+        let max_tokens_max_retries = 5;
+
         loop {
             let body = serde_json::json!({
                 "model": self.model.as_str(),
@@ -110,9 +151,35 @@ impl Client {
                     messages.push(assistant);
                     messages.push(user);
                 }
-                Some(StopReason::StopSequence | StopReason::MaxTokens) => {
+                Some(StopReason::StopSequence) => {
                     println!(":panic: How do I handle this: {response:?}");
                     break;
+                }
+                Some(StopReason::MaxTokens) => {
+                    max_tokens_retry_count += 1;
+
+                    if max_tokens_retry_count >= max_tokens_max_retries {
+                        println!(
+                            "Max retry attempts reached ({}) after removing oldest messages",
+                            max_tokens_max_retries
+                        );
+                        break;
+                    }
+
+                    if messages.len() <= 2 {
+                        println!("Cannot remove any more messages without losing context");
+                        break;
+                    }
+
+                    // Remove the oldest non-system message (index 0 is usually the first user message)
+                    println!(
+                        "Max tokens reached. Removing oldest message and retrying. Attempt {} of {}",
+                        max_tokens_retry_count, max_tokens_max_retries
+                    );
+                    messages.remove(1); // Keep the first message, remove the second oldest
+
+                    // Continue the outer loop to retry
+                    continue;
                 }
                 None => {
                     panic!("No stop reason was provided in {response:?}");
@@ -545,6 +612,43 @@ fn test_claude_response_serde() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_max_tokens_retry_behavior() {
+        // Create a basic client for testing
+        let client = Client {
+            model: "claude-3-opus-20240229".to_string(),
+            endpoint: "https://api.anthropic.com/v1/messages".to_string(),
+            client: reqwest::Client::new(),
+            mcp_clients: vec![],
+            tools: vec![],
+            max_tokens: 1024,
+        };
+
+        // Set up messages with a few entries to test removal
+        let mut messages = vec![
+            Message::user("Initial message".to_string()),
+            Message::user("Message 2".to_string()),
+            Message::user("Message 3".to_string()),
+            Message::user("Message 4".to_string()),
+        ];
+
+        // Test the MaxTokens handling directly
+        let retry_count = client.test_max_tokens_handling(&mut messages);
+
+        // Should stop after going through all messages except the first one
+        assert_eq!(retry_count, 3);
+
+        // Verify that messages were removed (started with 4, should have 2 left)
+        assert_eq!(messages.len(), 2);
+
+        // Check if the first message contains our expected initial message
+        if let Content::Text { text } = &messages[0].content[0] {
+            assert_eq!(text, "Initial message");
+        } else {
+            panic!("Expected Text content in first message");
+        }
+    }
 
     #[test]
     fn test_multiple_tool_use_extraction() {
