@@ -360,6 +360,7 @@ dependencies = [
  "clap",
  "config",
  "dirs",
+ "futures",
  "grep",
  "ignore",
  "log",
