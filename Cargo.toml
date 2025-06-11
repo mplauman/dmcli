@@ -21,6 +21,7 @@ opentelemetry-otlp = { version = "0.30.0", default-features = false, features = 
     "http-proto",
 ] }
 opentelemetry_sdk = { version = "0.30.0", default-features = false }
+regex = { version = "1.10.2", default-features = false }
 reqwest = { version = "0.12.15", default-features = false, features = [
     "json",
     "native-tls",
@@ -34,6 +35,7 @@ serde = { version = "1.0.219", default-features = false, features = [
 serde_json = { version = "1.0.140", default-features = false, features = [
     "std",
 ] }
+serde_yaml = { version = "0.9.30", default-features = false }
 shlex = { version = "1.3.0", default-features = false }
 syslog = { version = "7.0.0", default-features = false }
 tempfile = "3.10.1"

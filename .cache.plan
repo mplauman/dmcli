@@ -1,0 +1,322 @@
+# Metadata Cache Implementation Plan
+
+## Overview
+
+Implement an in-memory, thread-safe cache for tags, links, and frontmatter properties in `obsidian.rs`. The cache will:
+- Use the filename and last modification time as its key
+- Be thread-safe through RwLock with a guard pattern
+- Return references to cached data instead of clones
+- Prevent redundant file reads and parsing
+- Have no explicit expiration mechanism
+
+## Implementation Steps
+
+### 1. Define Cache Data Structures
+
+```rust
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
+use std::time::SystemTime;
+
+// Define the key for our cache
+#[derive(PartialEq, Eq, Hash, Clone)]
+struct CacheKey {
+    filepath: PathBuf,
+    last_modified: SystemTime,
+}
+
+// Define what we want to cache
+struct FileMetadataCache {
+    tags: Vec<String>,
+    links: Vec<String>,
+    frontmatter: Option<serde_yaml::Value>,
+}
+
+// The cache itself
+struct MetadataCache {
+    cache: RwLock<HashMap<CacheKey, FileMetadataCache>>,
+}
+
+// A guard type that holds both the lock and a reference to the data
+enum MetadataCacheGuard<'a> {
+    ReadGuard {
+        _guard: RwLockReadGuard<'a, HashMap<CacheKey, FileMetadataCache>>,
+        data: &'a FileMetadataCache,
+    },
+    WriteGuard {
+        _guard: RwLockWriteGuard<'a, HashMap<CacheKey, FileMetadataCache>>,
+        data: &'a FileMetadataCache,
+    },
+}
+
+// Implement deref to allow transparent access to the FileMetadataCache
+impl<'a> std::ops::Deref for MetadataCacheGuard<'a> {
+    type Target = FileMetadataCache;
+    
+    fn deref(&self) -> &Self::Target {
+        match self {
+            MetadataCacheGuard::ReadGuard { data, .. } => *data,
+            MetadataCacheGuard::WriteGuard { data, .. } => *data,
+        }
+    }
+}
+```
+
+### 2. Implement Cache Methods
+
+```rust
+impl MetadataCache {
+    fn new() -> Self {
+        MetadataCache {
+            cache: RwLock::new(HashMap::new()),
+        }
+    }
+
+    // Return a guard containing a reference to the cached data
+    fn get_or_parse<'a>(&'a self, filepath: &Path) -> Option<MetadataCacheGuard<'a>> {
+        let metadata = match std::fs::metadata(filepath) {
+            Ok(m) => m,
+            Err(_) => return None,
+        };
+        
+        let last_modified = match metadata.modified() {
+            Ok(time) => time,
+            Err(_) => return None,
+        };
+
+        let key = CacheKey {
+            filepath: filepath.to_path_buf(),
+            last_modified,
+        };
+
+        // Try to read from cache first
+        let read_guard = self.cache.read().unwrap();
+        
+        if let Some(cached_data) = read_guard.get(&key) {
+            // Return a guard that holds both the read lock and a reference to the data
+            return Some(MetadataCacheGuard::ReadGuard {
+                _guard: read_guard,
+                data: cached_data,
+            });
+        }
+        
+        // If not in cache, we need to drop the read guard to avoid deadlock
+        drop(read_guard);
+        
+        // Parse the file
+        let content = match std::fs::read_to_string(filepath) {
+            Ok(content) => content,
+            Err(_) => return None,
+        };
+        
+        // Parse tags, links, and frontmatter
+        let tags = self.extract_tags_from_content(&content);
+        let links = self.extract_links_from_content(&content);
+        let frontmatter = self.extract_frontmatter_from_content(&content);
+
+        let metadata_cache = FileMetadataCache {
+            tags,
+            links,
+            frontmatter,
+        };
+
+        // Store in cache with a write lock
+        let mut write_guard = self.cache.write().unwrap();
+        
+        // The entry might have been added by another thread while we were parsing
+        // So we use entry API to only insert if it doesn't exist
+        let entry = write_guard.entry(key).or_insert(metadata_cache);
+        
+        // Return a guard that holds both the write lock and a reference to the data
+        Some(MetadataCacheGuard::WriteGuard {
+            _guard: write_guard,
+            data: entry,
+        })
+    }
+
+    // Helper methods for parsing
+    fn extract_tags_from_content(&self, content: &str) -> Vec<String> {
+        // Reuse existing extract_tags_from_content logic
+        vec![]
+    }
+
+    fn extract_links_from_content(&self, content: &str) -> Vec<String> {
+        // Implement link extraction
+        vec![]
+    }
+
+    fn extract_frontmatter_from_content(&self, content: &str) -> Option<serde_yaml::Value> {
+        // Implement frontmatter extraction
+        None
+    }
+}
+```
+
+### 3. Add Cache to Obsidian Struct
+
+```rust
+pub struct Obsidian {
+    vault: PathBuf,
+    metadata_cache: Arc<MetadataCache>,
+}
+
+impl Obsidian {
+    pub fn new(vault: PathBuf) -> Self {
+        Obsidian {
+            vault,
+            metadata_cache: Arc::new(MetadataCache::new()),
+        }
+    }
+    
+    // ...existing methods...
+}
+```
+
+### 4. Refactor Existing Methods
+
+#### Extract Common Parsing Logic
+
+Move the parsing logic from existing methods to reusable helpers in the `MetadataCache` impl.
+
+#### Update `get_file_metadata`
+
+```rust
+pub fn get_file_metadata(
+    &self,
+    #[tool(aggr)] GetFileMetadataRequest { filename }: GetFileMetadataRequest,
+) -> Result<CallToolResult, rmcp::Error> {
+    let path = std::path::Path::new(&filename);
+    let full_path = if path.is_absolute() {
+        PathBuf::from(filename)
+    } else {
+        self.vault.join(path)
+    };
+
+    if !full_path.exists() || !full_path.is_file() {
+        log::warn!("File does not exist or is not a file: {}", filename);
+        return Err(rmcp::Error::InvalidArgument(format!("File not found: {}", filename)));
+    }
+
+    // Get file metadata from filesystem for basic attributes
+    let metadata = match fs::metadata(&full_path) {
+        Ok(m) => m,
+        Err(e) => return Err(rmcp::Error::InternalError(format!("Failed to read file metadata: {}", e))),
+    };
+
+    // Extract creation and modification times
+    let creation_date = metadata
+        .created()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+
+    let modification_date = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+
+    // Use the cache for parsed metadata
+    let result = match self.metadata_cache.get_or_parse(&full_path) {
+        Some(guard) => {
+            // The guard automatically dereferences to &FileMetadataCache
+            // We just need to clone the parts we need for the JSON result
+            serde_json::json!({
+                "creation_date": creation_date,
+                "modification_date": modification_date,
+                "tags": guard.tags.clone(),
+                "links": guard.links.clone(),
+                "frontmatter": guard.frontmatter.clone(),
+            })
+        },
+        None => {
+            // Fallback to direct parsing if cache fails
+            let content = fs::read_to_string(&full_path)?;
+            let tags = self.extract_tags_from_content(&content);
+            
+            serde_json::json!({
+                "creation_date": creation_date,
+                "modification_date": modification_date,
+                "tags": tags,
+                "links": Vec::<String>::new(), // implement link extraction
+                "frontmatter": serde_json::Value::Null, // implement frontmatter extraction
+            })
+        }
+    };
+
+    Ok(CallToolResult::success(vec![Content::json(result)?]))
+}
+```
+
+#### Update `get_tags_summary`
+
+```rust
+pub fn get_tags_summary(
+    &self,
+    #[tool(aggr)] GetTagsSummaryRequest { folder_path }: GetTagsSummaryRequest,
+) -> Result<CallToolResult, rmcp::Error> {
+    // Get all files in the vault or in the specified folder
+    let all_files = self.internal_list_files();
+
+    // Filter files by folder_path if provided
+    let files = /* filter logic */;
+
+    let mut tag_counts: HashMap<String, usize> = HashMap::new();
+    let mut tag_files: HashMap<String, Vec<String>> = HashMap::new();
+
+    for filepath in files {
+        // Use the cache to get tags
+        if let Some(guard) = self.metadata_cache.get_or_parse(&PathBuf::from(&filepath)) {
+            for tag in &guard.tags {
+                *tag_counts.entry(tag.clone()).or_insert(0) += 1;
+                tag_files.entry(tag.clone()).or_insert_with(Vec::new).push(filepath.clone());
+            }
+            // Guard is dropped here, releasing the lock
+        }
+    }
+
+    // Build tag summary
+    let mut tag_summary = Vec::new();
+    for (tag, count) in tag_counts {
+        tag_summary.push(TagSummary {
+            tag: tag.clone(),
+            count,
+            files: tag_files.get(&tag).cloned().unwrap_or_default(),
+        });
+    }
+
+    // Sort by count
+    tag_summary.sort_by(|a, b| b.count.cmp(&a.count));
+
+    let result = serde_json::json!(tag_summary);
+    Ok(CallToolResult::success(vec![Content::json(result)?]))
+}
+```
+
+### 5. Add Unit Tests
+
+Create tests to verify:
+- Cache hits return the same data as direct parsing
+- Cache invalidation occurs when files are modified
+- The cache works correctly in a threaded environment
+- Guards correctly preserve lock lifetimes
+- References to cached data remain valid only while guards are active
+
+## Benefits
+
+1. Reduced I/O operations for repeated requests
+2. Improved performance for functions that access the same files
+3. Consistent thread-safe access to parsed metadata
+4. Better foundation for implementing the next set of enhanced functions
+5. Minimal memory overhead by avoiding unnecessary clones
+6. More idiomatic Rust by using reference-based access with proper lifetime management
+
+## Considerations
+
+1. **Increased Complexity**: The guard pattern adds complexity but provides better memory efficiency
+2. **Lock Management**: Each guard holds a lock on the entire cache while it exists, so operations should be kept short
+3. **Scoping**: Guards must not be stored in long-lived data structures to avoid holding locks for too long
+4. **Error Handling**: Guards with proper error propagation require careful attention to lifetimes
