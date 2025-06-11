@@ -65,6 +65,18 @@ pub struct GetFileMetadataRequest {
     pub filename: String,
 }
 
+/// Request parameters for the get_tags_summary function
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+pub struct GetTagsSummaryRequest {
+    /// Optional folder path to limit the scope of tag search
+    /// If not provided, tags from the entire vault will be returned.
+    /// When specified, only tags from files in this folder (and its subfolders) will be included.
+    #[schemars(
+        description = "Optional folder path to limit the scope of tag search. If not provided, tags from the entire vault will be returned."
+    )]
+    pub folder_path: Option<String>,
+}
+
 #[derive(serde::Serialize)]
 pub struct FileMetadata {
     /// Creation date of the file (timestamp)
@@ -77,6 +89,21 @@ pub struct FileMetadata {
     pub links: Vec<String>,
     /// Frontmatter properties as key-value pairs from Markdown frontmatter (--- delimited section)
     pub frontmatter: HashMap<String, String>,
+}
+
+/// Response structure for get_tags_summary
+///
+/// This structure represents a single tag found in the vault, including
+/// its frequency and locations. Tags are returned in descending order of frequency,
+/// with alphabetical ordering used as a tiebreaker for tags with the same count.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct TagSummary {
+    /// Tag name (without the # prefix)
+    pub tag: String,
+    /// Number of occurrences of the tag in the vault
+    pub count: usize,
+    /// List of files where the tag appears (relative paths from vault root)
+    pub files: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -357,6 +384,39 @@ impl Obsidian {
     ///
     /// The frontmatter is expected to be at the beginning of the file,
     /// enclosed between `---` lines, which is a common format in Markdown files.
+    /// Extracts tags from a Markdown file
+    ///
+    /// This helper function extracts tags (format: #tag) from Markdown content
+    /// after removing frontmatter. It's used by both get_file_metadata and get_tags_summary.
+    fn extract_tags_from_content(&self, content: &str) -> Vec<String> {
+        // Extract frontmatter from Markdown files (between --- delimiters)
+        let content_without_frontmatter = if let Some(stripped) = content.strip_prefix("---") {
+            if let Some(end_index) = stripped.find("---") {
+                // Return content after frontmatter
+                &stripped[end_index + 3..]
+            } else {
+                content
+            }
+        } else {
+            content
+        };
+
+        // Extract tags (#tag)
+        let mut tags = Vec::new();
+        for word in content_without_frontmatter.split_whitespace() {
+            if word.starts_with('#') && word.len() > 1 {
+                let tag = word[1..]
+                    .trim_end_matches(|c: char| !c.is_alphanumeric())
+                    .to_string();
+                if !tag.is_empty() && !tags.contains(&tag) {
+                    tags.push(tag);
+                }
+            }
+        }
+
+        tags
+    }
+
     #[tool(
         description = "extracts metadata from markdown files. returns creation date, modification date, tags, links, and frontmatter properties."
     )]
@@ -424,18 +484,8 @@ impl Obsidian {
             &content
         };
 
-        // Extract tags (#tag)
-        let mut tags = Vec::new();
-        for word in content_without_frontmatter.split_whitespace() {
-            if word.starts_with('#') && word.len() > 1 {
-                let tag = word[1..]
-                    .trim_end_matches(|c: char| !c.is_alphanumeric())
-                    .to_string();
-                if !tag.is_empty() && !tags.contains(&tag) {
-                    tags.push(tag);
-                }
-            }
-        }
+        // Extract tags using helper method
+        let tags = self.extract_tags_from_content(&content);
 
         // Extract links ([[link]])
         let mut links = Vec::new();
@@ -466,6 +516,107 @@ impl Obsidian {
 
         let result = serde_json::json!(file_metadata);
         log::info!("File metadata extracted successfully");
+
+        Ok(CallToolResult::success(vec![Content::json(result)?]))
+    }
+
+    /// Returns a summary of all tags used in the vault, including their frequency and location
+    ///
+    /// This function scans all Markdown files in the vault (or a specific folder if provided)
+    /// and extracts all tags. It then returns a list of tags sorted by frequency (most common first).
+    /// For each tag, it includes:
+    /// - The tag name (without the # symbol)
+    /// - The count of occurrences across all files
+    /// - A list of files where the tag appears
+    ///
+    /// This is useful for understanding the tagging system used in the vault and finding
+    /// common themes or categories.
+    #[tool(
+        description = "returns all tags used across the vault with their frequency and the files they appear in"
+    )]
+    pub fn get_tags_summary(
+        &self,
+        #[tool(aggr)] GetTagsSummaryRequest { folder_path }: GetTagsSummaryRequest,
+    ) -> Result<CallToolResult, rmcp::Error> {
+        // Get all files in the vault or in the specified folder
+        let all_files = self.internal_list_files();
+
+        // Filter files by folder_path if provided
+        let files = if let Some(folder) = folder_path {
+            let folder_clone = folder.clone();
+            let folder_path = if let Some(stripped) = folder.strip_prefix('/') {
+                self.vault.join(stripped)
+            } else {
+                self.vault.join(folder)
+            };
+
+            // Check if the folder exists
+            if !folder_path.exists() || !folder_path.is_dir() {
+                log::warn!(
+                    "Folder does not exist or is not a directory: {:?}",
+                    folder_path
+                );
+                let error_msg = format!("Folder not found: {}", folder_clone);
+                return Ok(CallToolResult::error(vec![Content::text(error_msg)]));
+            }
+
+            // Filter files that are within the specified folder
+            all_files
+                .into_iter()
+                .filter(|path| path.starts_with(&folder_path))
+                .collect()
+        } else {
+            all_files
+        };
+
+        // Create a map to track tag counts and files
+        let mut tag_map: HashMap<String, (usize, Vec<String>)> = HashMap::new();
+
+        // Process each file
+        for path in files {
+            // Skip non-markdown files
+            if let Some(ext) = path.extension() {
+                if ext != "md" {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+
+            // Read file content
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                // Extract tags from the file content
+                let tags = self.extract_tags_from_content(&content);
+
+                // Get relative path for reporting
+                let rel_path = path
+                    .strip_prefix(&self.vault)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .to_string();
+
+                // Update tag map
+                for tag in tags {
+                    let entry = tag_map.entry(tag).or_insert((0, Vec::new()));
+                    entry.0 += 1;
+                    if !entry.1.contains(&rel_path) {
+                        entry.1.push(rel_path.clone());
+                    }
+                }
+            }
+        }
+
+        // Convert the map to a vector of TagSummary objects
+        let mut tag_summary: Vec<TagSummary> = tag_map
+            .into_iter()
+            .map(|(tag, (count, files))| TagSummary { tag, count, files })
+            .collect();
+
+        // Sort by count (descending) and then by tag name (ascending)
+        tag_summary.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.tag.cmp(&b.tag)));
+
+        let result = serde_json::json!(tag_summary);
+        log::info!("Tag summary generated successfully");
 
         Ok(CallToolResult::success(vec![Content::json(result)?]))
     }
@@ -516,6 +667,14 @@ mod tests {
                 temp_dir.path().join("with_frontmatter.md"),
                 "---\ntitle: Frontmatter Test\ntype: note\ntags: important, reference\n---\n# Document with Frontmatter\nThis document has YAML frontmatter and #metadata tags with a [[link_test]]",
             ),
+            (
+                temp_dir.path().join("tagged_document.md"),
+                "# Document with Multiple Tags\nThis document has #multiple #tags and some #duplicate #tags\nAlso #multiple appears twice in the document #newline",
+            ),
+            (
+                char_dir.join("tagged_npc.md"),
+                "# Tagged NPC\nThis is an NPC with #character and #important tags",
+            ),
         ];
 
         for (path, content) in &files {
@@ -525,6 +684,98 @@ mod tests {
         }
 
         temp_dir
+    }
+
+    #[test]
+    fn test_get_tags_summary() {
+        // Create a test vault
+        let temp_dir = create_test_vault();
+        let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
+
+        // Test getting tags summary for the entire vault
+        let result = obsidian
+            .get_tags_summary(GetTagsSummaryRequest { folder_path: None })
+            .expect("Failed to get tags summary");
+
+        // Extract the content from the result
+        let content = result.content;
+        let content_str = format!("{:?}", content[0]);
+
+        // Check that we have JSON content with tags
+        assert!(
+            content_str.contains("tag"),
+            "Response should contain tag information"
+        );
+        assert!(
+            content_str.contains("character"),
+            "Response should contain character tag"
+        );
+        assert!(
+            content_str.contains("multiple"),
+            "Response should contain multiple tag"
+        );
+        assert!(
+            content_str.contains("metadata"),
+            "Response should contain metadata tag"
+        );
+
+        // Check for count and sorting information
+        assert!(
+            content_str.contains("count"),
+            "Response should contain count information"
+        );
+
+        // Check that the content contains file paths
+        assert!(
+            content_str.contains("files"),
+            "Response should contain file paths"
+        );
+        assert!(
+            content_str.contains(".md"),
+            "Response should contain markdown file extensions"
+        );
+
+        // Test with a specific folder path
+        let result = obsidian
+            .get_tags_summary(GetTagsSummaryRequest {
+                folder_path: Some("characters".to_string()),
+            })
+            .expect("Failed to get tags summary for characters folder");
+
+        // Extract the content from the result
+        let content = result.content;
+        let content_str = format!("{:?}", content[0]);
+
+        // Verify that content is returned
+        assert!(
+            content_str.contains("tag"),
+            "Response should contain tag information"
+        );
+
+        // Verify that only files from characters directory are included
+        assert!(
+            content_str.contains("characters/"),
+            "Response should contain files from characters directory"
+        );
+        assert!(
+            !content_str.contains("locations/"),
+            "Response should not contain files from locations directory"
+        );
+
+        // Test with an invalid folder path
+        let result = obsidian
+            .get_tags_summary(GetTagsSummaryRequest {
+                folder_path: Some("nonexistent".to_string()),
+            })
+            .expect("Function should not fail");
+
+        // Check the content for error
+        let content = result.content;
+        let content_str = format!("{:?}", content[0]);
+        assert!(
+            content_str.contains("Folder not found"),
+            "Should return an error content for nonexistent folder"
+        );
     }
 
     #[test]
@@ -538,8 +789,8 @@ mod tests {
 
         // Validate the structure
         assert_eq!(structure.name, "vault");
-        assert_eq!(structure.file_count, 4); // Total of 4 files in the vault
-        assert_eq!(structure.files.len(), 1); // 1 file directly in the root
+        assert_eq!(structure.file_count, 7); // Total of 7 files in the vault
+        assert_eq!(structure.files.len(), 3); // 3 files directly in the root
         assert_eq!(structure.subdirectories.len(), 2); // 2 subdirectories
 
         // Validate the characters directory
@@ -548,8 +799,8 @@ mod tests {
             .get("characters")
             .expect("Characters directory not found");
         assert_eq!(chars.name, "characters");
-        assert_eq!(chars.file_count, 2); // 2 character files
-        assert_eq!(chars.files.len(), 2); // Both files directly in this directory
+        assert_eq!(chars.file_count, 3); // 3 character files
+        assert_eq!(chars.files.len(), 3); // All files directly in this directory
         assert_eq!(chars.subdirectories.len(), 0); // No subdirectories
 
         // Validate the locations directory
@@ -571,17 +822,19 @@ mod tests {
 
         // Get the structure of just the characters subfolder
         let char_path = temp_dir.path().join("characters");
+        // Get the structure of a subdirectory
         let structure = obsidian.build_directory_structure(&char_path);
 
         // Validate the structure
         assert_eq!(structure.name, "characters");
-        assert_eq!(structure.file_count, 2); // 2 files in this directory
-        assert_eq!(structure.files.len(), 2); // Both files directly in this directory
+        assert_eq!(structure.file_count, 3); // 3 files in this directory
+        assert_eq!(structure.files.len(), 3); // All files directly in this directory
         assert_eq!(structure.subdirectories.len(), 0); // No subdirectories
 
         // Verify file names
         assert!(structure.files.contains(&"npc1.md".to_string()));
         assert!(structure.files.contains(&"npc2.md".to_string()));
+        assert!(structure.files.contains(&"tagged_npc.md".to_string()));
     }
 
     #[test]
@@ -628,6 +881,7 @@ mod tests {
         assert!(content_str.contains("characters"));
         assert!(content_str.contains("npc1.md"));
         assert!(content_str.contains("npc2.md"));
+        assert!(content_str.contains("tagged_npc.md"));
         assert!(!content_str.contains("city.md")); // Should not include location files
     }
 
