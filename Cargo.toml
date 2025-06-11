@@ -36,6 +36,7 @@ serde_json = { version = "1.0.140", default-features = false, features = [
 ] }
 shlex = { version = "1.3.0", default-features = false }
 syslog = { version = "7.0.0", default-features = false }
+tempfile = "3.10.1"
 tokio = { version = "1.45.0", default-features = false, features = [
     "macros",
     "rt",

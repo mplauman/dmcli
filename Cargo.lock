@@ -375,6 +375,7 @@ dependencies = [
  "serde_json",
  "shlex",
  "syslog",
+ "tempfile",
  "tokio",
 ]
 
