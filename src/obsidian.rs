@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -141,14 +142,14 @@ impl MetadataCache {
         filepath: &Path,
         extract_tags: impl Fn(&str) -> Vec<String>,
     ) -> Option<FileMetadataCache> {
-        let metadata = match std::fs::metadata(filepath) {
-            Ok(m) => m,
-            Err(_) => return None,
+        let Ok(metadata) = std::fs::metadata(filepath) else {
+            log::warn!("Failed to get metadata for {}", filepath.display());
+            return None;
         };
 
-        let last_modified = match metadata.modified() {
-            Ok(time) => time,
-            Err(_) => return None,
+        let Ok(last_modified) = metadata.modified() else {
+            log::warn!("Failed to get last modified for {}", filepath.display());
+            return None;
         };
 
         let key = CacheKey {
@@ -156,24 +157,19 @@ impl MetadataCache {
             last_modified,
         };
 
-        // Try to read from cache first
-        let cache_read = match self.cache.read() {
-            Ok(guard) => guard,
-            Err(_) => return None,
+        // Try to read from cache firsts
+        let cached_data = match self.cache.read() {
+            Ok(cache_read) => cache_read.get(&key).cloned(),
+            Err(x) => panic!("Cache RW lock is poisoned: {}", x),
         };
-
-        if let Some(cached_data) = cache_read.get(&key) {
-            // Return a clone of the cached data
-            return Some(cached_data.clone());
+        if cached_data.is_some() {
+            return cached_data;
         }
 
-        // If not in cache, we need to drop the read guard to avoid deadlock
-        drop(cache_read);
-
         // Parse the file
-        let content = match std::fs::read_to_string(filepath) {
-            Ok(content) => content,
-            Err(_) => return None,
+        let Ok(content) = std::fs::read_to_string(filepath) else {
+            log::warn!("Failed to read the contents of {}", filepath.display());
+            return None;
         };
 
         // Parse tags, links, and frontmatter
@@ -197,33 +193,24 @@ impl MetadataCache {
     }
 }
 
-// Helper functions for parsing
+// Helper functions for parsing [[link]] entries out of a file.
 fn extract_links_from_content(content: &str) -> Vec<String> {
-    let mut links = Vec::new();
+    let re = Regex::new(r"\[\[(.*?)\]\]").expect("hardcoded regex must be valid");
 
-    // Match [[link]] format
-    let re = Regex::new(r"\[\[(.*?)\]\]").unwrap();
-    for cap in re.captures_iter(content) {
-        if let Some(link) = cap.get(1) {
-            let link_text = link.as_str().to_string();
-            if !links.contains(&link_text) {
-                links.push(link_text);
-            }
-        }
-    }
-
-    links
+    re.captures_iter(content)
+        .filter_map(|cap| cap.get(1))
+        .map(|link| link.as_str().to_string())
+        .collect::<HashSet<String>>()
+        .into_iter()
+        .collect()
 }
 
 fn extract_frontmatter_from_content(content: &str) -> Option<serde_yaml::Value> {
-    // Extract frontmatter from Markdown files (between --- delimiters)
-    if let Some(stripped) = content.strip_prefix("---") {
-        if let Some(end_index) = stripped.find("---") {
-            let frontmatter_str = &stripped[0..end_index];
-            return serde_yaml::from_str(frontmatter_str).ok();
-        }
-    }
-    None
+    let stripped = content.strip_prefix("---")?;
+    let end_index = stripped.find("---")?;
+
+    let frontmatter_str = &stripped[0..end_index];
+    serde_yaml::from_str(frontmatter_str).ok()
 }
 
 #[derive(Clone)]
@@ -695,11 +682,7 @@ impl Obsidian {
 
         for filepath in files {
             // Skip non-markdown files
-            if let Some(ext) = filepath.extension() {
-                if ext != "md" {
-                    continue;
-                }
-            } else {
+            if filepath.extension() != Some(OsStr::new("md")) {
                 continue;
             }
 
@@ -1261,15 +1244,24 @@ mod tests {
 
     #[test]
     fn test_extract_links_from_content() {
+        use std::collections::HashSet;
+
         // Test with multiple links
         let content = "This is text with [[link1]] and [[link2]] and [[link3]].";
         let links = extract_links_from_content(content);
-        assert_eq!(links, vec!["link1", "link2", "link3"]);
+        let expected: HashSet<String> = ["link1", "link2", "link3"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let actual: HashSet<String> = links.into_iter().collect();
+        assert_eq!(actual, expected);
 
         // Test with duplicate links
         let content = "This has [[duplicate]] and [[duplicate]] links.";
         let links = extract_links_from_content(content);
-        assert_eq!(links, vec!["duplicate"]);
+        let expected: HashSet<String> = ["duplicate"].iter().map(|s| s.to_string()).collect();
+        let actual: HashSet<String> = links.into_iter().collect();
+        assert_eq!(actual, expected);
 
         // Test with no links
         let content = "This text has no links at all.";
