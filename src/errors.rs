@@ -58,3 +58,9 @@ impl From<rmcp::ServiceError> for Error {
         panic!("Don't know how to handle {error:?}");
     }
 }
+
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Self {
+        panic!("Don't know how to handle {}", error);
+    }
+}

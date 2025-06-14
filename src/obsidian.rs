@@ -1,3 +1,4 @@
+use crate::errors::Error;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs;
@@ -44,8 +45,6 @@ pub struct GetVaultStructureRequest {
 pub struct DirectoryInfo {
     /// Name of the current directory
     pub name: String,
-    /// Total number of files in this directory and all subdirectories
-    pub file_count: usize,
     /// List of files directly in this directory
     pub files: Vec<String>,
     /// Map of subdirectory names to their directory information
@@ -270,91 +269,51 @@ impl Obsidian {
     /// # Returns
     ///
     /// A `DirectoryInfo` struct containing the hierarchical directory structure
-    fn build_directory_structure(&self, base_path: &PathBuf) -> DirectoryInfo {
-        let walk = ignore::WalkBuilder::new(base_path)
-            .hidden(false)
-            .standard_filters(true)
-            .follow_links(true)
-            .build();
-
-        let mut root_name = base_path
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_else(|| "vault".to_string());
-
-        // If we're building from the vault root, use a specific name
-        if base_path == &self.vault {
-            root_name = "vault".to_string();
-        }
-
-        let mut dir_info = DirectoryInfo {
-            name: root_name,
-            file_count: 0,
-            files: Vec::new(),
-            subdirectories: HashMap::new(),
+    fn build_directory_structure(&self, path: PathBuf) -> Result<DirectoryInfo, Error> {
+        let name = if path == self.vault {
+            "vault".to_string()
+        } else {
+            path.file_name()
+                .expect("paths have names")
+                .to_string_lossy()
+                .to_string()
         };
 
-        // First pass: collect all entries
-        let mut entries = Vec::new();
-        for result in walk {
-            let Ok(entry) = result else {
-                log::warn!("Failed to read {:?}", result);
-                continue;
-            };
-            entries.push(entry);
-        }
+        let mut files = Vec::new();
+        let mut children = Vec::new();
 
-        // Process files first
-        for entry in &entries {
-            let Some(file_type) = entry.file_type() else {
-                log::warn!("Failed to get file type from {:?}", entry);
+        for entry_result in std::fs::read_dir(path)? {
+            let Ok(entry) = entry_result else {
+                log::warn!("Skipping invalid entry: {:?}", entry_result);
                 continue;
             };
 
-            let path = entry.path();
+            let entry_path = entry.path();
+            let entry_type = entry.file_type()?;
 
-            if !file_type.is_dir() {
-                // Skip files not directly in this directory
-                if path.parent().map(|p| p != base_path).unwrap_or(true) {
-                    continue;
-                }
-
-                let filename = path
-                    .file_name()
-                    .map(|name| name.to_string_lossy().to_string())
-                    .unwrap_or_default();
-
-                dir_info.files.push(filename);
-                dir_info.file_count += 1;
+            if entry_type.is_dir() {
+                children.push(self.build_directory_structure(entry_path)?);
+                continue;
             }
-        }
 
-        // Process subdirectories
-        for entry in &entries {
-            let Some(file_type) = entry.file_type() else {
+            let Some(filename) = entry_path.file_name() else {
+                log::warn!("Failed to get file name for {}", entry_path.display());
                 continue;
             };
 
-            let path = entry.path();
-
-            if file_type.is_dir() && path != base_path {
-                // Skip nested directories that aren't direct children
-                if path.parent().map(|p| p != base_path).unwrap_or(true) {
-                    continue;
-                }
-
-                let subdir_name = path
-                    .file_name()
-                    .map(|name| name.to_string_lossy().to_string())
-                    .unwrap_or_default();
-
-                let subdir_info = self.build_directory_structure(&path.to_path_buf());
-                dir_info.file_count += subdir_info.file_count;
-                dir_info.subdirectories.insert(subdir_name, subdir_info);
-            }
+            files.push(filename.to_string_lossy().to_string());
         }
 
-        dir_info
+        let found = DirectoryInfo {
+            name,
+            files,
+            subdirectories: children
+                .into_iter()
+                .map(|it| (it.name.clone(), it))
+                .collect(),
+        };
+
+        Ok(found)
     }
 
     #[tool(
@@ -455,29 +414,42 @@ impl Obsidian {
         &self,
         #[tool(aggr)] GetVaultStructureRequest { folder_path }: GetVaultStructureRequest,
     ) -> Result<CallToolResult, rmcp::Error> {
-        let base_path = if let Some(folder) = folder_path {
-            let path = std::path::Path::new(&folder);
-            if path.is_absolute() {
-                log::warn!("Absolute path provided: {}", folder);
-                self.vault.clone()
-            } else {
-                let combined_path = self.vault.join(path);
-                if combined_path.exists() && combined_path.is_dir() {
-                    combined_path
-                } else {
-                    log::warn!(
-                        "Folder path does not exist or is not a directory: {}",
-                        folder
-                    );
+        let base_path = match folder_path.as_ref().map(std::path::Path::new) {
+            Some(path) => {
+                log::info!("Finding folder structor for {}", path.display());
+                if path.is_absolute() {
+                    log::warn!("Ignoring absolute path");
                     self.vault.clone()
+                } else {
+                    log::info!("Appending to vault");
+                    self.vault.join(path)
                 }
             }
+            None => {
+                log::info!("No path provided, defaulting to vault");
+                self.vault.clone()
+            }
+        };
+
+        let base_path = if base_path.exists() && base_path.is_dir() {
+            base_path
         } else {
+            log::warn!("Attempted base path {} doesn't exist", base_path.display());
             self.vault.clone()
         };
 
         log::info!("Building directory structure for {}", base_path.display());
-        let structure = self.build_directory_structure(&base_path);
+        let structure = match self.build_directory_structure(base_path) {
+            Ok(structure) => structure,
+            Err(e) => {
+                log::warn!("Cannot get structure: {}", e);
+                DirectoryInfo {
+                    name: "vault".into(),
+                    files: Vec::default(),
+                    subdirectories: HashMap::default(),
+                }
+            }
+        };
 
         let result = serde_json::json!(structure);
         log::info!("Directory structure built successfully");
@@ -913,11 +885,12 @@ mod tests {
         let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
 
         // Get the structure of the entire vault
-        let structure = obsidian.build_directory_structure(&temp_dir.path().to_path_buf());
+        let structure = obsidian
+            .build_directory_structure(temp_dir.path().to_path_buf())
+            .expect("it can be built");
 
         // Validate the structure
         assert_eq!(structure.name, "vault");
-        assert_eq!(structure.file_count, 7); // Total of 7 files in the vault
         assert_eq!(structure.files.len(), 3); // 3 files directly in the root
         assert_eq!(structure.subdirectories.len(), 2); // 2 subdirectories
 
@@ -927,7 +900,6 @@ mod tests {
             .get("characters")
             .expect("Characters directory not found");
         assert_eq!(chars.name, "characters");
-        assert_eq!(chars.file_count, 3); // 3 character files
         assert_eq!(chars.files.len(), 3); // All files directly in this directory
         assert_eq!(chars.subdirectories.len(), 0); // No subdirectories
 
@@ -937,7 +909,6 @@ mod tests {
             .get("locations")
             .expect("Locations directory not found");
         assert_eq!(locs.name, "locations");
-        assert_eq!(locs.file_count, 1); // 1 location file
         assert_eq!(locs.files.len(), 1); // File directly in this directory
         assert_eq!(locs.subdirectories.len(), 0); // No subdirectories
     }
@@ -951,11 +922,12 @@ mod tests {
         // Get the structure of just the characters subfolder
         let char_path = temp_dir.path().join("characters");
         // Get the structure of a subdirectory
-        let structure = obsidian.build_directory_structure(&char_path);
+        let structure = obsidian
+            .build_directory_structure(char_path)
+            .expect("it can be built");
 
         // Validate the structure
         assert_eq!(structure.name, "characters");
-        assert_eq!(structure.file_count, 3); // 3 files in this directory
         assert_eq!(structure.files.len(), 3); // All files directly in this directory
         assert_eq!(structure.subdirectories.len(), 0); // No subdirectories
 
