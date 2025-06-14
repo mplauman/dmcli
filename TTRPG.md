@@ -3,8 +3,8 @@
 This document outlines a comprehensive set of functions for an MCP server that would allow an LLM to quickly and efficiently understand a collection of Dungeon Master's notes.
 
 ## Implementation Progress
-- ✅ Complete: 6/18 functions (33%)
-- ❌ Pending: 12/18 functions (67%)
+- ✅ Complete: 7/18 functions (39%)
+- ❌ Pending: 11/18 functions (61%)
 
 ## Current Implementation Status
 
@@ -15,6 +15,7 @@ The existing implementation includes:
 4. `get_vault_structure` - Returns hierarchical folder structure ✅
 5. `get_file_metadata` - Extracts metadata from markdown files ✅
 6. `get_tags_summary` - Returns tags with frequency ✅
+7. `get_note_by_tag` - Find notes with specific tags ✅
 
 These provide basic functionality, but more advanced features are still needed for optimal understanding of the semantic structure of DM notes.
 
@@ -41,7 +42,7 @@ These provide basic functionality, but more advanced features are still needed f
 
 ### 2. Enhanced Content Retrieval
 
-#### 2.1. `get_note_by_tag` ❌
+#### 2.1. `get_note_by_tag` ✅
 - Find notes that have specific tags
 - Parameters: Tag name(s)
 - Returns: List of files with matching tags and their frontmatter
