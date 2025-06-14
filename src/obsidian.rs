@@ -79,6 +79,23 @@ pub struct GetTagsSummaryRequest {
     pub folder_path: Option<String>,
 }
 
+/// Request parameters for the get_note_by_tag function
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+pub struct GetNoteByTagRequest {
+    /// Tag names to search for (without the # symbol)
+    /// Can be a single tag or multiple tags
+    #[schemars(
+        description = "Tag names to search for (without the # symbol). Files matching any of these tags will be returned."
+    )]
+    pub tags: Vec<String>,
+    /// Optional folder path to limit the scope of search
+    /// If not provided, searches the entire vault
+    #[schemars(
+        description = "Optional folder path to limit the scope of search. If not provided, searches the entire vault."
+    )]
+    pub folder_path: Option<String>,
+}
+
 #[derive(serde::Serialize)]
 pub struct FileMetadata {
     /// Creation date of the file (timestamp)
@@ -106,6 +123,21 @@ pub struct TagSummary {
     pub count: usize,
     /// List of files where the tag appears (relative paths from vault root)
     pub files: Vec<String>,
+}
+
+/// Response structure for get_note_by_tag function
+#[derive(serde::Serialize)]
+pub struct NoteWithTags {
+    /// Filename (relative path from vault root)
+    pub filename: String,
+    /// Tags found in this file
+    pub tags: Vec<String>,
+    /// Frontmatter from the file
+    pub frontmatter: serde_json::Value,
+    /// Creation date of the file (timestamp)
+    pub creation_date: u64,
+    /// Modification date of the file (timestamp)
+    pub modification_date: u64,
 }
 
 // Define the key for our cache
@@ -717,6 +749,121 @@ impl Obsidian {
 
         Ok(CallToolResult::success(vec![Content::json(result)?]))
     }
+
+    /// Find notes that have specific tags
+    ///
+    /// This function searches through all markdown files in the vault (or a specific folder)
+    /// to find notes that contain any of the specified tags. It leverages the metadata cache
+    /// for efficient tag lookup and returns file information along with their frontmatter.
+    #[tool(
+        description = "find notes that have specific tags. returns list of files with matching tags and their metadata."
+    )]
+    pub fn get_note_by_tag(
+        &self,
+        #[tool(aggr)] GetNoteByTagRequest { tags, folder_path }: GetNoteByTagRequest,
+    ) -> Result<CallToolResult, rmcp::Error> {
+        if tags.is_empty() {
+            return Err(rmcp::Error::invalid_request(
+                "At least one tag must be provided".to_string(),
+                None,
+            ));
+        }
+
+        let mut matching_notes = Vec::new();
+        let files = self.internal_list_files();
+
+        // Filter files based on folder_path if provided
+        let filtered_files: Vec<PathBuf> = if let Some(ref folder) = folder_path {
+            let folder_path = if Path::new(folder).is_absolute() {
+                PathBuf::from(folder)
+            } else {
+                self.vault.join(folder)
+            };
+
+            files
+                .into_iter()
+                .filter(|file| file.starts_with(&folder_path))
+                .collect()
+        } else {
+            files
+        };
+
+        for file_path in filtered_files {
+            // Only process markdown files
+            if file_path.extension().is_none_or(|ext| ext != "md") {
+                continue;
+            }
+
+            // Try to get cached metadata first
+            if let Some(cache_data) = self.metadata_cache.get_or_parse(&file_path, |content| {
+                self.extract_tags_from_content(content)
+            }) {
+                // Check if any of the requested tags match the file's tags
+                let file_has_matching_tag = cache_data.tags.iter().any(|file_tag| {
+                    tags.iter().any(|requested_tag| {
+                        file_tag.eq_ignore_ascii_case(requested_tag)
+                            || file_tag.eq_ignore_ascii_case(&format!("#{}", requested_tag))
+                    })
+                });
+
+                if file_has_matching_tag {
+                    // Get file system metadata
+                    let metadata = match fs::metadata(&file_path) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            log::warn!("Failed to get metadata for {}: {}", file_path.display(), e);
+                            continue;
+                        }
+                    };
+
+                    let creation_date = metadata
+                        .created()
+                        .ok()
+                        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                        .map(|duration| duration.as_secs())
+                        .unwrap_or(0);
+
+                    let modification_date = metadata
+                        .modified()
+                        .ok()
+                        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                        .map(|duration| duration.as_secs())
+                        .unwrap_or(0);
+
+                    // Convert file path to relative path from vault root
+                    let relative_path = file_path
+                        .strip_prefix(&self.vault)
+                        .unwrap_or(&file_path)
+                        .to_string_lossy()
+                        .to_string();
+
+                    // Convert frontmatter to JSON value
+                    let frontmatter_json = match &cache_data.frontmatter {
+                        Some(yaml_value) => {
+                            serde_json::to_value(yaml_value).unwrap_or(serde_json::Value::Null)
+                        }
+                        None => serde_json::Value::Null,
+                    };
+
+                    matching_notes.push(NoteWithTags {
+                        filename: relative_path,
+                        tags: cache_data.tags.clone(),
+                        frontmatter: frontmatter_json,
+                        creation_date,
+                        modification_date,
+                    });
+                }
+            }
+        }
+
+        // Sort by filename for consistent output
+        matching_notes.sort_by(|a, b| a.filename.cmp(&b.filename));
+
+        let result = serde_json::json!(matching_notes);
+        log::info!("Found {} notes with matching tags", matching_notes.len());
+
+        Ok(CallToolResult::success(vec![Content::json(result)?]))
+    }
 }
 
 #[tool(tool_box)]
@@ -1257,5 +1404,62 @@ mod tests {
         let content = "---\nThis is not valid YAML\n::\n---\nContent";
         let frontmatter = extract_frontmatter_from_content(content);
         assert!(frontmatter.is_none());
+    }
+
+    #[test]
+    fn test_get_note_by_tag() {
+        // Create a test vault
+        let temp_dir = create_test_vault();
+        let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
+
+        // Test searching for a specific tag
+        let request = GetNoteByTagRequest {
+            tags: vec!["character".to_string()],
+            folder_path: None,
+        };
+
+        let result = obsidian
+            .get_note_by_tag(request)
+            .expect("Tool function failed");
+
+        // Verify the result contains notes with the character tag
+        let content = result.content;
+        let content_str = format!("{:?}", content[0]);
+
+        // Should find character files that have the character tag
+        assert!(content_str.contains("character"));
+
+        // Test with multiple tags
+        let request = GetNoteByTagRequest {
+            tags: vec!["character".to_string(), "important".to_string()],
+            folder_path: None,
+        };
+
+        let result = obsidian
+            .get_note_by_tag(request)
+            .expect("Tool function failed");
+
+        // Should find files with either tag
+        let content = result.content;
+        assert!(!content.is_empty());
+
+        // Test with folder path filter
+        let request = GetNoteByTagRequest {
+            tags: vec!["character".to_string()],
+            folder_path: Some("characters".to_string()),
+        };
+
+        let _result = obsidian
+            .get_note_by_tag(request)
+            .expect("Tool function should succeed even with folder filter");
+
+        // Test with empty tags (should return error)
+        let request = GetNoteByTagRequest {
+            tags: vec![],
+            folder_path: None,
+        };
+
+        let result = obsidian.get_note_by_tag(request);
+        assert!(result.is_err());
     }
 }
