@@ -71,7 +71,8 @@ fn init_logging(settings: &Config) -> Result<(), Error> {
         aggregate_log_builder = aggregate_log_builder.with(logger);
     }
 
-    log::set_boxed_logger(Box::new(aggregate_log_builder.build()))?;
+    log::set_boxed_logger(Box::new(aggregate_log_builder.build()))
+        .expect("A logger should not have already been set");
 
     match settings
         .get_string("logging.level")

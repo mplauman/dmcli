@@ -204,9 +204,7 @@ impl Client {
             .collect();
 
         if tool_uses.is_empty() {
-            return Err(Error::Generic(
-                "No tools provided for execution".to_string(),
-            ));
+            return Err(Error::NoToolUses);
         }
 
         log::info!("Found {} tool(s) to execute in parallel", tool_uses.len());
