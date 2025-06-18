@@ -29,9 +29,10 @@ pub struct ListFilesRequest {}
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct GetVaultStructureRequest {
     /// Optional folder path to get structure of a subsection
+    /// Must be fully qualified relative to the vault root (e.g., 'folder/subfolder'), NOT an absolute path
     /// If not provided, returns the entire vault structure
     #[schemars(
-        description = "Optional folder path to get structure of a subsection. If not provided, returns the entire vault structure."
+        description = "Optional folder path to get structure of a subsection. Must be fully qualified relative to the vault root (e.g., 'folder/subfolder'), NOT an absolute path. If not provided, returns the entire vault structure."
     )]
     pub folder_path: Option<String>,
 }
@@ -54,7 +55,7 @@ pub struct DirectoryInfo {
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct ReadTextFileRequest {
     #[schemars(
-        description = "the fully qualified name of the file to read. this should *only* be a file that exists in the vault. do not guess filenames."
+        description = "The fully qualified name of the file to read, relative to the vault root (e.g., 'folder/file.md'). This should NOT be an absolute path. This should *only* be a file that exists in the vault. Do not guess filenames."
     )]
     pub filename: String,
 }
@@ -62,7 +63,7 @@ pub struct ReadTextFileRequest {
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct GetFileMetadataRequest {
     #[schemars(
-        description = "the filename to extract metadata from. this should be a markdown file in the vault."
+        description = "The filename to extract metadata from, relative to the vault root (e.g., 'folder/file.md'). This should NOT be an absolute path. This should be a markdown file in the vault."
     )]
     pub filename: String,
 }
@@ -71,10 +72,11 @@ pub struct GetFileMetadataRequest {
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct GetTagsSummaryRequest {
     /// Optional folder path to limit the scope of tag search
+    /// Must be fully qualified relative to the vault root (e.g., 'folder/subfolder'), NOT an absolute path
     /// If not provided, tags from the entire vault will be returned.
     /// When specified, only tags from files in this folder (and its subfolders) will be included.
     #[schemars(
-        description = "Optional folder path to limit the scope of tag search. If not provided, tags from the entire vault will be returned."
+        description = "Optional folder path to limit the scope of tag search. Must be fully qualified relative to the vault root (e.g., 'folder/subfolder'), NOT an absolute path. If not provided, tags from the entire vault will be returned."
     )]
     pub folder_path: Option<String>,
 }
@@ -89,9 +91,10 @@ pub struct GetNoteByTagRequest {
     )]
     pub tags: Vec<String>,
     /// Optional folder path to limit the scope of search
+    /// Must be fully qualified relative to the vault root (e.g., 'folder/subfolder'), NOT an absolute path
     /// If not provided, searches the entire vault
     #[schemars(
-        description = "Optional folder path to limit the scope of search. If not provided, searches the entire vault."
+        description = "Optional folder path to limit the scope of search. Must be fully qualified relative to the vault root (e.g., 'folder/subfolder'), NOT an absolute path. If not provided, searches the entire vault."
     )]
     pub folder_path: Option<String>,
 }
@@ -349,9 +352,7 @@ impl Obsidian {
     }
 
     #[tool(
-        description = "recursively lists all files in a directory. if provided a path, this will list all files
-        within that path recursively. if no path is provided, this will list all files starting from the vault
-        root. the returned values are absolute paths to the matching files."
+        description = "Recursively lists all files in the vault. Returns paths relative to the vault root, NOT absolute paths. All files in the vault will be listed starting from the vault root."
     )]
     pub fn list_files(
         &self,
@@ -364,8 +365,7 @@ impl Obsidian {
     }
 
     #[tool(
-        description = "search through files and folders for a pattern. returns a
-        list of files that include the requested pattern."
+        description = "Search through files and folders for a pattern. Returns a list of files that include the requested pattern. File paths are returned relative to the vault root, NOT as absolute paths."
     )]
     pub fn grep(
         &self,
@@ -417,8 +417,7 @@ impl Obsidian {
     }
 
     #[tool(
-        description = "read the contents of a text file. this should only be used for files that
-        contain text, such as markdown (.md) or text (.txt)"
+        description = "Read the contents of a text file. The filename parameter must be fully qualified relative to the vault root (e.g., 'folder/file.md'), NOT an absolute path. This should only be used for files that contain text, such as markdown (.md) or text (.txt)."
     )]
     pub fn read_text_file(
         &self,
@@ -440,7 +439,7 @@ impl Obsidian {
     /// to understand the organization of notes, which is especially helpful for
     /// discovering the organizational system used by the DM.
     #[tool(
-        description = "returns a hierarchical representation of the vault's folder structure. helps understand how the notes are organized. returns JSON with directory structure and file counts."
+        description = "Returns a hierarchical representation of the vault's folder structure. Helps understand how the notes are organized. Returns JSON with directory structure and file counts. If folder_path is provided, it must be relative to the vault root, NOT an absolute path."
     )]
     pub fn get_vault_structure(
         &self,
@@ -533,7 +532,7 @@ impl Obsidian {
     }
 
     #[tool(
-        description = "extracts metadata from markdown files. returns creation date, modification date, tags, links, and frontmatter properties."
+        description = "Extracts metadata from markdown files. The filename parameter must be fully qualified relative to the vault root (e.g., 'folder/file.md'), NOT an absolute path. Returns creation date, modification date, tags, links, and frontmatter properties."
     )]
     pub fn get_file_metadata(
         &self,
@@ -644,7 +643,7 @@ impl Obsidian {
     /// This is useful for understanding the tagging system used in the vault and finding
     /// common themes or categories.
     #[tool(
-        description = "returns all tags used across the vault with their frequency and the files they appear in"
+        description = "Returns all tags used across the vault with their frequency and the files they appear in. If folder_path is provided, it must be relative to the vault root, NOT an absolute path. File paths in results are returned relative to the vault root."
     )]
     pub fn get_tags_summary(
         &self,
@@ -756,7 +755,7 @@ impl Obsidian {
     /// to find notes that contain any of the specified tags. It leverages the metadata cache
     /// for efficient tag lookup and returns file information along with their frontmatter.
     #[tool(
-        description = "find notes that have specific tags. returns list of files with matching tags and their metadata."
+        description = "Find notes that have specific tags. Returns list of files with matching tags and their metadata. If folder_path is provided, it must be relative to the vault root, NOT an absolute path. File paths in results are returned relative to the vault root."
     )]
     pub fn get_note_by_tag(
         &self,
