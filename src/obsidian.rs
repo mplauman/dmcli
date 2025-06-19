@@ -363,19 +363,6 @@ impl Obsidian {
     }
 
     #[tool(
-        description = "Recursively lists all files in the vault. Returns paths relative to the vault root, NOT absolute paths. All files in the vault will be listed starting from the vault root."
-    )]
-    pub fn list_files(
-        &self,
-        #[tool(aggr)] ListFilesRequest {}: ListFilesRequest,
-    ) -> Result<CallToolResult, rmcp::Error> {
-        let files = self.internal_list_files();
-        let result = serde_json::json!(files);
-
-        Ok(CallToolResult::success(vec![Content::json(result)?]))
-    }
-
-    #[tool(
         description = "Search through files and folders for a pattern. Returns a list of files that include the requested pattern. File paths are returned relative to the vault root, NOT as absolute paths."
     )]
     pub fn grep(
