@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use grep::searcher::{Searcher, Sink, SinkMatch};
+
 use regex::Regex;
 use rmcp::{
     ServerHandler,
@@ -262,6 +264,15 @@ impl Obsidian {
         }
     }
 
+    /// Validates that a path is relative to the vault root, not absolute
+    fn validate_vault_path(&self, path: &str) -> Result<PathBuf, Error> {
+        let path_obj = std::path::Path::new(path);
+        if path_obj.is_absolute() {
+            return Err(Error::InvalidVaultPath(path.to_string()));
+        }
+        Ok(self.vault.join(path_obj))
+    }
+
     /// Recursively find a list of files in a directory. If a directory is not provided then
     /// the entire vault will be listed.
     fn internal_list_files(&self) -> Vec<PathBuf> {
@@ -373,7 +384,7 @@ impl Obsidian {
     ) -> Result<CallToolResult, rmcp::Error> {
         use grep::{
             regex::RegexMatcherBuilder,
-            searcher::{Encoding, SearcherBuilder, sinks::Bytes},
+            searcher::{Encoding, SearcherBuilder},
         };
 
         log::info!("Searching for {}", query);
@@ -385,25 +396,33 @@ impl Obsidian {
             .expect("the regex will work");
 
         let mut searcher = SearcherBuilder::new()
-            .line_number(true)
             .encoding(Some(Encoding::new("UTF-8").unwrap()))
             .build();
 
-        let mut matching_files = Vec::<String>::new();
-
         // if this is a directory then find all the files. otherwise just read the file
-        for path in self.internal_list_files() {
-            let sink = Bytes(|lnum, _bytes| {
-                log::info!("Found match in {}, line {}", path.display(), lnum);
+        let matching_files = self
+            .internal_list_files()
+            .into_iter()
+            .filter_map(|path| {
+                let mut found = false;
 
-                matching_files.push(path.to_string_lossy().to_string());
-                Ok(false)
-            });
+                searcher
+                    .search_path(&matcher, &path, OnMatch(|| found = true))
+                    .expect("the search works");
 
-            searcher
-                .search_path(&matcher, &path, sink)
-                .expect("the search works");
-        }
+                if !found {
+                    return None;
+                };
+
+                let stripped = path
+                    .strip_prefix(&self.vault)
+                    .map(|stripped| stripped.to_string_lossy())
+                    .map(|string| string.into_owned());
+
+                Some(stripped)
+            })
+            .collect::<Result<Vec<String>, _>>()
+            .map_err(Error::from)?;
 
         log::info!(
             "Found matching files: {}",
@@ -423,7 +442,8 @@ impl Obsidian {
         &self,
         #[tool(aggr)] ReadTextFileRequest { filename }: ReadTextFileRequest,
     ) -> Result<CallToolResult, rmcp::Error> {
-        let contents = std::fs::read_to_string(filename).expect("failed to read file");
+        let full_path = self.validate_vault_path(&filename)?;
+        let contents = std::fs::read_to_string(full_path).map_err(Error::from)?;
         let result = CallToolResult::success(vec![Content::text(contents)]);
 
         Ok(result)
@@ -445,19 +465,13 @@ impl Obsidian {
         &self,
         #[tool(aggr)] GetVaultStructureRequest { folder_path }: GetVaultStructureRequest,
     ) -> Result<CallToolResult, rmcp::Error> {
-        let base_path = match folder_path.as_ref().map(std::path::Path::new) {
-            Some(path) => {
-                log::info!("Finding folder structor for {}", path.display());
-                if path.is_absolute() {
-                    log::warn!("Ignoring absolute path");
-                    self.vault.clone()
-                } else {
-                    log::info!("Appending to vault");
-                    self.vault.join(path)
-                }
+        let base_path = match folder_path.as_ref() {
+            Some(folder) => {
+                log::info!("Finding folder structure for {}", folder);
+                self.validate_vault_path(folder)?
             }
             None => {
-                log::info!("No path provided, defaulting to vault");
+                log::info!("Using vault root");
                 self.vault.clone()
             }
         };
@@ -470,17 +484,14 @@ impl Obsidian {
         };
 
         log::info!("Building directory structure for {}", base_path.display());
-        let structure = match self.build_directory_structure(base_path) {
-            Ok(structure) => structure,
-            Err(e) => {
-                log::warn!("Cannot get structure: {}", e);
-                DirectoryInfo {
-                    name: "vault".into(),
-                    files: Vec::default(),
-                    subdirectories: HashMap::default(),
-                }
+        let structure = self.build_directory_structure(base_path).map_err(|e| {
+            log::warn!("Cannot get structure: {}", e);
+            DirectoryInfo {
+                name: "vault".into(),
+                files: Vec::default(),
+                subdirectories: HashMap::default(),
             }
-        };
+        });
 
         let result = serde_json::json!(structure);
         log::info!("Directory structure built successfully");
@@ -539,12 +550,7 @@ impl Obsidian {
         #[tool(aggr)] GetFileMetadataRequest { filename }: GetFileMetadataRequest, // filename must be a Markdown file
     ) -> Result<CallToolResult, rmcp::Error> {
         let filename_copy = filename.clone();
-        let path = std::path::Path::new(&filename);
-        let full_path = if path.is_absolute() {
-            PathBuf::from(filename)
-        } else {
-            self.vault.join(path)
-        };
+        let full_path = self.validate_vault_path(&filename)?;
 
         if !full_path.exists() || !full_path.is_file() {
             log::warn!("File does not exist or is not a file: {}", filename_copy);
@@ -581,10 +587,10 @@ impl Obsidian {
             .unwrap_or(0);
 
         // Use the cache for parsed metadata
-        let result = match self.metadata_cache.get_or_parse(&full_path, |content| {
-            self.extract_tags_from_content(content)
-        }) {
-            Some(cache_data) => {
+        let result = self
+            .metadata_cache
+            .get_or_parse(&full_path, |content| self.extract_tags_from_content(content))
+            .map(|cache_data| {
                 // We have the cached data, use it for the result
                 serde_json::json!({
                     "creation_date": creation_date,
@@ -593,38 +599,11 @@ impl Obsidian {
                     "links": cache_data.links,
                     "frontmatter": cache_data.frontmatter.unwrap_or_else(|| serde_yaml::Value::Null),
                 })
-            }
-            None => {
-                // Fallback to direct parsing if cache fails
-                let content = match std::fs::read_to_string(&full_path) {
-                    Ok(content) => content,
-                    Err(e) => {
-                        return Err(rmcp::Error::internal_error(
-                            format!("Failed to read file: {}", e),
-                            None,
-                        ));
-                    }
-                };
-
-                // Extract tags using helper method
-                let tags = self.extract_tags_from_content(&content);
-
-                // Extract links
-                let links = extract_links_from_content(&content);
-
-                // Extract frontmatter
-                let frontmatter = extract_frontmatter_from_content(&content)
-                    .unwrap_or_else(|| serde_yaml::Value::Null);
-
-                serde_json::json!({
-                    "creation_date": creation_date,
-                    "modification_date": modification_date,
-                    "tags": tags,
-                    "links": links,
-                    "frontmatter": frontmatter,
-                })
-            }
-        };
+            })
+            .unwrap_or_else(|| {
+                log::warn!("Failed to load cached data, returning empty details");
+                Default::default()
+            });
 
         log::info!("File metadata extracted successfully");
 
@@ -655,11 +634,7 @@ impl Obsidian {
         // Filter files by folder_path if provided
         let files = if let Some(folder) = folder_path {
             let folder_clone = folder.clone();
-            let folder_path = if let Some(stripped) = folder.strip_prefix('/') {
-                self.vault.join(stripped)
-            } else {
-                self.vault.join(folder)
-            };
+            let folder_path = self.validate_vault_path(&folder)?;
 
             // Check if the folder exists
             if !folder_path.exists() || !folder_path.is_dir() {
@@ -773,11 +748,7 @@ impl Obsidian {
 
         // Filter files based on folder_path if provided
         let filtered_files: Vec<PathBuf> = if let Some(ref folder) = folder_path {
-            let folder_path = if Path::new(folder).is_absolute() {
-                PathBuf::from(folder)
-            } else {
-                self.vault.join(folder)
-            };
+            let folder_path = self.validate_vault_path(folder)?;
 
             files
                 .into_iter()
@@ -867,6 +838,22 @@ impl Obsidian {
 
 #[tool(tool_box)]
 impl ServerHandler for Obsidian {}
+
+struct OnMatch<F>(pub F)
+where
+    F: FnMut();
+
+impl<F> Sink for OnMatch<F>
+where
+    F: FnMut(),
+{
+    type Error = std::io::Error;
+
+    fn matched(&mut self, _searcher: &Searcher, _mat: &SinkMatch<'_>) -> Result<bool, Self::Error> {
+        self.0();
+        Ok(false)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1159,15 +1146,9 @@ mod tests {
         let temp_dir = create_test_vault();
         let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
 
-        // Test file with tags and links
-        let file_path = temp_dir
-            .path()
-            .join("characters")
-            .join("npc1.md")
-            .to_string_lossy()
-            .to_string();
+        // Test file with tags and links (using relative path)
         let request = GetFileMetadataRequest {
-            filename: file_path,
+            filename: "characters/npc1.md".to_string(),
         };
 
         let result = obsidian
@@ -1190,13 +1171,9 @@ mod tests {
         let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
 
         // Test file with Markdown frontmatter
-        let file_path = temp_dir
-            .path()
-            .join("with_frontmatter.md")
-            .to_string_lossy()
-            .to_string();
+        // Test file with frontmatter (using relative path)
         let request = GetFileMetadataRequest {
-            filename: file_path,
+            filename: "with_frontmatter.md".to_string(),
         };
 
         let result = obsidian
@@ -1460,5 +1437,195 @@ mod tests {
 
         let result = obsidian.get_note_by_tag(request);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_text_file_absolute_path() {
+        let temp_dir = create_test_vault();
+        let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
+
+        let request = ReadTextFileRequest {
+            filename: "/absolute/path/file.md".to_string(),
+        };
+
+        let result = obsidian.read_text_file(request);
+        assert!(result.is_err());
+
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("Invalid vault path"));
+        assert!(error.to_string().contains("absolute"));
+    }
+
+    #[test]
+    fn test_get_file_metadata_absolute_path() {
+        let temp_dir = create_test_vault();
+        let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
+
+        let request = GetFileMetadataRequest {
+            filename: "/absolute/path/file.md".to_string(),
+        };
+
+        let result = obsidian.get_file_metadata(request);
+        assert!(result.is_err());
+
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("Invalid vault path"));
+        assert!(error.to_string().contains("absolute"));
+    }
+
+    #[test]
+    fn test_get_vault_structure_absolute_path() {
+        let temp_dir = create_test_vault();
+        let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
+
+        let request = GetVaultStructureRequest {
+            folder_path: Some("/absolute/path".to_string()),
+        };
+
+        let result = obsidian.get_vault_structure(request);
+        assert!(result.is_err());
+
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("Invalid vault path"));
+        assert!(error.to_string().contains("absolute"));
+    }
+
+    #[test]
+    fn test_get_tags_summary_absolute_path() {
+        let temp_dir = create_test_vault();
+        let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
+
+        let request = GetTagsSummaryRequest {
+            folder_path: Some("/absolute/path".to_string()),
+        };
+
+        let result = obsidian.get_tags_summary(request);
+        assert!(result.is_err());
+
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("Invalid vault path"));
+        assert!(error.to_string().contains("absolute"));
+    }
+
+    #[test]
+    fn test_get_note_by_tag_absolute_path() {
+        let temp_dir = create_test_vault();
+        let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
+
+        let request = GetNoteByTagRequest {
+            tags: vec!["test".to_string()],
+            folder_path: Some("/absolute/path".to_string()),
+        };
+
+        let result = obsidian.get_note_by_tag(request);
+        assert!(result.is_err());
+
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("Invalid vault path"));
+        assert!(error.to_string().contains("absolute"));
+    }
+
+    #[test]
+    fn test_relative_paths_work() {
+        let temp_dir = create_test_vault();
+        let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
+
+        // Test that relative paths work correctly
+        let request = GetVaultStructureRequest {
+            folder_path: Some("subfolder".to_string()),
+        };
+
+        let result = obsidian.get_vault_structure(request);
+        // Should not error for relative paths (though might fail if folder doesn't exist)
+        // The important thing is that it doesn't fail with InvalidVaultPath
+        if let Err(error) = result {
+            assert!(!error.to_string().contains("Invalid vault path"));
+        }
+    }
+
+    #[test]
+    fn test_invalid_vault_path_error_conversion() {
+        use crate::errors::Error;
+
+        // Test that InvalidVaultPath error converts properly to rmcp::Error
+        let error = Error::InvalidVaultPath("/absolute/path/test.md".to_string());
+        let rmcp_error: rmcp::Error = error.into();
+
+        let error_str = rmcp_error.to_string();
+        assert!(error_str.contains("Invalid vault path"));
+        assert!(error_str.contains("/absolute/path/test.md"));
+        assert!(error_str.contains("paths must be relative to the vault root"));
+        assert!(error_str.contains("not absolute"));
+    }
+
+    #[test]
+    fn test_validate_vault_path_helper() {
+        let temp_dir = create_test_vault();
+        let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
+
+        // Test that relative paths work correctly
+        let result = obsidian.validate_vault_path("characters/npc1.md");
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        assert!(path.ends_with("characters/npc1.md"));
+        assert!(path.is_absolute()); // Should be absolute after joining with vault
+
+        // Test that absolute paths are rejected
+        let result = obsidian.validate_vault_path("/absolute/path/file.md");
+        assert!(result.is_err());
+
+        let error = result.unwrap_err();
+        match error {
+            Error::InvalidVaultPath(path) => {
+                assert_eq!(path, "/absolute/path/file.md");
+            }
+            _ => panic!("Expected InvalidVaultPath error"),
+        }
+
+        // Test empty relative path
+        let result = obsidian.validate_vault_path("");
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        assert_eq!(path, obsidian.vault);
+
+        // Test relative path with current directory
+        let result = obsidian.validate_vault_path("./file.md");
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        assert!(path.ends_with("file.md"));
+    }
+
+    #[test]
+    fn test_grep_returns_relative_paths() {
+        // Create a test vault
+        let temp_dir = create_test_vault();
+        let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
+
+        // Test searching for content that exists in the vault
+        let request = GrepRequest {
+            query: "character".to_string(),
+        };
+
+        let result = obsidian.grep(request).expect("Grep tool function failed");
+
+        // Extract the content from the result
+        let content = result.content;
+        let content_str = format!("{:?}", content[0]);
+
+        // Verify that we found some files and they are relative paths
+        assert!(
+            content_str.contains("npc1.md") || content_str.contains("tagged_npc.md"),
+            "Should find files containing 'character'. Content: {}",
+            content_str
+        );
+
+        // Verify that paths are relative (don't contain the absolute vault path)
+        let vault_path = temp_dir.path().to_str().unwrap();
+        assert!(
+            !content_str.contains(vault_path),
+            "Grep result should not contain absolute vault path: {}. Content: {}",
+            vault_path,
+            content_str
+        );
     }
 }

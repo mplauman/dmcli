@@ -6,6 +6,8 @@ pub enum Error {
     Interrupted,
     WindowResized,
     JsonDeserialization(usize, usize, serde_json::error::Category),
+    InvalidVaultPath(String),
+    Http(reqwest::Error),
 }
 
 impl std::fmt::Display for Error {
@@ -38,7 +40,19 @@ impl std::fmt::Display for Error {
                 "Syntax error while deserializing JSON (line {}, col {})",
                 line, column
             ),
+            Self::InvalidVaultPath(path) => write!(
+                f,
+                "Invalid vault path '{}': paths must be relative to the vault root, not absolute",
+                path
+            ),
+            Self::Http(e) => write!(f, "HTTP error: {}", e),
         }
+    }
+}
+
+impl From<std::path::StripPrefixError> for Error {
+    fn from(error: std::path::StripPrefixError) -> Self {
+        panic!("Don't know how to handle {}", error);
     }
 }
 
@@ -64,7 +78,7 @@ impl From<config::ConfigError> for Error {
 
 impl From<reqwest::Error> for Error {
     fn from(error: reqwest::Error) -> Self {
-        panic!("Don't know how to handle {error:?}");
+        Self::Http(error)
     }
 }
 
@@ -134,6 +148,98 @@ impl From<Error> for rmcp::Error {
                 "Invalid JSON syntax during tool use while decoding JSON on line {}, column {}",
                 line, column
             ),
+            Error::InvalidVaultPath(path) => rmcp::Error::invalid_request(
+                format!(
+                    "Invalid vault path '{}': paths must be relative to the vault root, not absolute",
+                    path
+                ),
+                None,
+            ),
+            Error::Http(e) => rmcp::Error::internal_error(format!("HTTP error: {}", e), None),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_http_error_enum_variant_exists() {
+        // Test that Http variant exists and can be matched
+        // We create a dummy reqwest error by making an invalid URL request
+        let _result = std::panic::catch_unwind(|| {
+            // This will create a reqwest error when we try to build an invalid request
+            let client = reqwest::Client::new();
+            // Use a clearly invalid URL scheme to trigger an error
+            client.get("not-a-valid-url-scheme://example.com").build()
+        });
+
+        // We don't need the actual error, just testing the enum variant exists
+        // and can be handled properly in match statements
+        match Error::NoToolUses {
+            Error::Http(_) => unreachable!(),
+            Error::NoToolUses => {} // This should match
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn test_error_display_coverage() {
+        // Test display implementations for all variants
+        let errors = vec![
+            Error::NoToolUses,
+            Error::Eof,
+            Error::Interrupted,
+            Error::WindowResized,
+            Error::InvalidVaultPath("/test/path".to_string()),
+        ];
+
+        for error in errors {
+            let display_str = format!("{}", error);
+            assert!(!display_str.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_invalid_vault_path_error() {
+        let error = Error::InvalidVaultPath("/absolute/path".to_string());
+        let display_str = format!("{}", error);
+        assert!(display_str.contains("Invalid vault path"));
+        assert!(display_str.contains("absolute"));
+        assert!(display_str.contains("relative to the vault root"));
+    }
+
+    #[tokio::test]
+    async fn test_reqwest_error_integration() {
+        // Test that reqwest::Error properly converts to Error::Http
+        let client = reqwest::Client::new();
+
+        // Make a request to an invalid URL to generate a real reqwest::Error
+        let result = client
+            .get("http://this-domain-absolutely-does-not-exist-12345.invalid")
+            .send()
+            .await;
+
+        // This should fail and give us a reqwest::Error
+        if let Err(reqwest_error) = result {
+            // Convert to our Error type
+            let our_error: Error = reqwest_error.into();
+
+            // Verify it's the Http variant
+            match our_error {
+                Error::Http(_) => {
+                    // Test display
+                    let display_str = format!("{}", our_error);
+                    assert!(display_str.contains("HTTP error:"));
+
+                    // Test conversion to rmcp::Error
+                    let rmcp_error: rmcp::Error = our_error.into();
+                    let rmcp_str = rmcp_error.to_string();
+                    assert!(rmcp_str.contains("HTTP error:"));
+                }
+                _ => panic!("Expected Error::Http variant"),
+            }
         }
     }
 }

@@ -118,14 +118,12 @@ impl Client {
                 .json(&body)
                 .build()?;
 
-            let response: ClaudeResponse = self
-                .client
-                .execute(request)
-                .await
-                .unwrap()
-                .json()
-                .await
-                .unwrap();
+            let response = self.client.execute(request).await?;
+            let response = response.text().await?;
+            let response = serde_json::from_str::<ClaudeResponse>(&response).map_err(|x| {
+                log::error!("BAD RESPONSE {:?} <<< {}", x, response);
+                x
+            })?;
 
             log::debug!("AGENT RESPONSE <<< {}", serde_json::to_string(&response)?);
 
@@ -340,7 +338,7 @@ impl Default for ClientBuilder {
             api_key: None,
             model: "claude-3-5-haiku-20241022".to_owned(),
             version: "2023-06-01".to_owned(),
-            max_tokens: 16384,
+            max_tokens: 8192,
             endpoint: "https://api.anthropic.com/v1/messages".to_owned(),
             mcp_clients: Vec::default(),
         }
