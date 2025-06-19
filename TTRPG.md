@@ -3,21 +3,24 @@
 This document outlines a comprehensive set of functions for an MCP server that would allow an LLM to quickly and efficiently understand a collection of Dungeon Master's notes.
 
 ## Implementation Progress
-- ✅ Complete: 7/18 functions (39%)
-- ❌ Pending: 11/18 functions (61%)
+- ✅ Complete: 8/17 functions (47%)
+- ❌ Pending: 9/17 functions (53%)
+
+Note: The old `grep` function has been replaced by the more powerful `search_with_context` function.
 
 ## Current Implementation Status
 
 The existing implementation includes:
 1. `list_files` - Lists all files recursively ✅
-2. `grep` - Simple text pattern search ✅
-3. `read_text_file` - Reads a specific file's contents ✅
-4. `get_vault_structure` - Returns hierarchical folder structure ✅
-5. `get_file_metadata` - Extracts metadata from markdown files ✅
-6. `get_tags_summary` - Returns tags with frequency ✅
-7. `get_note_by_tag` - Find notes with specific tags ✅
+2. `read_text_file` - Reads a specific file's contents ✅
+3. `get_vault_structure` - Returns hierarchical folder structure ✅
+4. `get_file_metadata` - Extracts metadata from markdown files ✅
+5. `get_tags_summary` - Returns tags with frequency ✅
+6. `get_note_by_tag` - Find notes with specific tags ✅
+7. `search_with_context` - Enhanced search with surrounding context lines ✅
+8. `get_linked_notes` - Find incoming and outgoing note links ✅
 
-These provide basic functionality, but more advanced features are still needed for optimal understanding of the semantic structure of DM notes.
+These provide comprehensive functionality for understanding and navigating DM note collections, with advanced search and relationship mapping capabilities.
 
 ## Proposed Enhanced Functions
 
@@ -47,12 +50,12 @@ These provide basic functionality, but more advanced features are still needed f
 - Parameters: Tag name(s)
 - Returns: List of files with matching tags and their frontmatter
 
-#### 2.2. `search_with_context` ❌
+#### 2.2. `search_with_context` ✅
 - Enhanced version of grep that returns matching content with surrounding context
-- Parameters: Search query, context lines (before/after)
-- Returns: Snippets of text with matches highlighted, including file metadata
+- Parameters: Search query, context lines (before/after), regex support, case sensitivity
+- Returns: Snippets of text with matches highlighted, including file metadata and line numbers
 
-#### 2.3. `get_linked_notes` ❌
+#### 2.3. `get_linked_notes` ✅
 - Find all notes that link to or are linked from a specific note
 - Parameters: Filename
 - Returns: Incoming and outgoing links with context
@@ -120,9 +123,88 @@ These provide basic functionality, but more advanced features are still needed f
 
 5. **Lightweight Indexing**: Create a lightweight index of the vault to speed up queries.
 
+## Implementation Details for Completed Functions
+
+### `search_with_context` Function
+
+This function provides enhanced search capabilities with contextual information around matches:
+
+#### Features:
+- **Regex Support**: Can perform both literal string searches and regex pattern matching
+- **Case Sensitivity**: Configurable case-sensitive or case-insensitive search
+- **Context Lines**: Returns specified number of lines before and after each match
+- **Match Positioning**: Provides exact character positions of matches within lines
+- **File Filtering**: Only searches text files (primarily .md and .txt)
+
+#### Request Structure:
+```rust
+pub struct SearchWithContextRequest {
+    pub query: String,                    // Search pattern
+    pub context_lines: Option<usize>,     // Lines of context (default: 2)
+    pub regex: Option<bool>,              // Enable regex (default: false)
+    pub case_sensitive: Option<bool>,     // Case sensitivity (default: false)
+}
+```
+
+#### Response Structure:
+```rust
+pub struct SearchMatch {
+    pub filename: String,        // Relative path from vault root
+    pub line_number: usize,      // 1-based line number
+    pub line_content: String,    // The actual line with the match
+    pub context_before: Vec<String>,  // Lines before the match
+    pub context_after: Vec<String>,   // Lines after the match
+    pub match_start: usize,      // Character position where match starts
+    pub match_end: usize,        // Character position where match ends
+}
+```
+
+#### Use Cases:
+- Finding specific terms with surrounding context for better understanding
+- Regex searches for complex patterns (e.g., finding all dates, names, etc.)
+- Case-sensitive searches for proper nouns or specific formatting
+
+### `get_linked_notes` Function
+
+This function analyzes wiki-style links (`[[note_name]]`) to map relationships between notes:
+
+#### Features:
+- **Bidirectional Link Analysis**: Finds both outgoing and incoming links
+- **Link Format Support**: Handles various wiki-link formats including paths
+- **Metadata Caching**: Uses the existing cache system for performance
+- **File Validation**: Ensures target file exists before processing
+
+#### Request Structure:
+```rust
+pub struct GetLinkedNotesRequest {
+    pub filename: String,  // Target file (relative to vault root)
+}
+```
+
+#### Response Structure:
+```rust
+pub struct LinkedNotes {
+    pub filename: String,           // The target filename
+    pub outgoing_links: Vec<String>, // Notes this file links to
+    pub incoming_links: Vec<String>, // Notes that link to this file
+}
+```
+
+#### Link Detection Logic:
+- Extracts `[[link_name]]` patterns from markdown content
+- Handles nested paths like `[[locations/tavern]]`
+- Matches links by filename with and without extensions
+- Caches link data for improved performance on repeated queries
+
+#### Use Cases:
+- Understanding note relationships and dependencies
+- Finding related content when preparing for sessions
+- Identifying orphaned notes (no incoming links)
+- Mapping knowledge graphs of campaign elements
+
 ## Example Implementation of Key Function
 
-Here's how one of these functions might be implemented in the existing codebase:
+Here's how one of the remaining functions might be implemented in the existing codebase:
 
 ```rust
 #[derive(serde::Deserialize, schemars::JsonSchema)]

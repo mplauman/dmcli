@@ -12,7 +12,6 @@ clap = { version = "4.5.38", default-features = false, features = [
 config = { version = "0.15.11", default-features = false, features = ["toml"] }
 dirs = { version = "6.0.0", default-features = false }
 futures = "0.3.31"
-grep = { version = "0.3.2", default-features = false }
 ignore = { version = "0.4.23", default-features = false }
 log = { version = "0.4.27", default-features = false }
 opentelemetry-appender-log = { version = "0.30.0", default-features = false }
@@ -21,7 +20,9 @@ opentelemetry-otlp = { version = "0.30.0", default-features = false, features = 
     "http-proto",
 ] }
 opentelemetry_sdk = { version = "0.30.0", default-features = false }
-regex = { version = "1.10.2", default-features = false }
+regex = { version = "1.10.2", default-features = false, features = [
+    "unicode-case",
+] }
 reqwest = { version = "0.12.15", default-features = false, features = [
     "json",
     "native-tls",

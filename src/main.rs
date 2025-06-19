@@ -12,6 +12,8 @@ mod commands;
 mod errors;
 mod logger;
 mod obsidian;
+#[cfg(test)]
+mod test_integration;
 
 fn read_line(readline: &mut rustyline::DefaultEditor) -> Result<Option<String>, Error> {
     match readline.readline(">> ") {
