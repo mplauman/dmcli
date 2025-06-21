@@ -17,6 +17,7 @@ mod logger;
 mod obsidian;
 #[cfg(test)]
 mod test_integration;
+mod tui;
 
 fn load_settings() -> Result<Config, Error> {
     use config::{Environment, File};
@@ -123,7 +124,8 @@ async fn main() -> Result<(), Error> {
 
     let (event_sender, event_receiver) = mpsc::channel::<AppEvent>();
     let mut input_handler = InputHandler::new(event_sender.clone())?;
-    let mut client = create_client(&settings, event_sender).await?;
+    let mut client = create_client(&settings, event_sender.clone()).await?;
+    let mut tui = crate::tui::Tui::new(&settings, event_sender.clone())?;
 
     let mut done = false;
     while !done {
@@ -165,6 +167,8 @@ async fn main() -> Result<(), Error> {
                 AppEvent::CommandError(msg) => println!("Error: {}", msg),
             }
         }
+
+        tui.render()?;
     }
 
     log::info!("Exiting cleanly");
