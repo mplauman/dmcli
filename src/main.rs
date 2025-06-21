@@ -1,35 +1,21 @@
 use anthropic::ClientBuilder;
-use clap::Parser;
 use config::Config;
-use shlex::split;
 
 use crate::anthropic::Client;
-use crate::commands::{DmCli, DmCommand};
+use crate::commands::DmCommand;
 use crate::errors::Error;
+use crate::events::AppEvent;
+use crate::input::InputHandler;
 
 mod anthropic;
 mod commands;
 mod errors;
 mod events;
+mod input;
 mod logger;
 mod obsidian;
 #[cfg(test)]
 mod test_integration;
-
-fn read_line(readline: &mut rustyline::DefaultEditor) -> Result<Option<String>, Error> {
-    match readline.readline(">> ") {
-        Ok(line) => Ok(Some(line)),
-        Err(rustyline::error::ReadlineError::Interrupted) => Ok(None),
-        Err(x) => Err(x.into()),
-    }
-}
-
-fn parse_command(line: &str) -> Option<DmCommand> {
-    match split(line).map(DmCli::try_parse_from) {
-        Some(Ok(DmCli { command })) => Some(command),
-        _ => None,
-    }
-}
 
 fn load_settings() -> Result<Config, Error> {
     use config::{Environment, File};
@@ -126,7 +112,7 @@ async fn create_client(config: &Config) -> Result<Client, Error> {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
-    let mut rl = rustyline::DefaultEditor::new().unwrap();
+    let mut input_handler = InputHandler::new()?;
 
     let settings = load_settings()?;
     init_logging(&settings)?;
@@ -136,45 +122,36 @@ async fn main() -> Result<(), Error> {
     let mut ai_chat = Vec::<anthropic::Message>::new();
 
     loop {
-        let Some(line) = read_line(&mut rl)? else {
-            log::info!("No line read, exiting");
-            break;
-        };
+        let event = input_handler.read_input()?;
 
-        if line.is_empty() {
-            continue;
-        }
-
-        rl.add_history_entry(line.as_str())?;
-
-        // Check to see if the entered text can be handled with one of the built in commands. This
-        // is much faster, cheaper, and more accurate than feeding it to an AI agent for processing.
-        if let Some(command) = parse_command(line.as_str()) {
-            log::info!("Line appears to be a paseable command: {}", line);
-
-            match command {
-                DmCommand::Exit {} => {
-                    println!("Good bye!");
-                    break;
-                }
-                DmCommand::Reset {} => {
-                    ai_chat.clear();
-                }
-                DmCommand::Roll { expressions } => {
-                    let result = caith::Roller::new(&expressions.join(" "))
-                        .unwrap()
-                        .roll()
-                        .unwrap();
-                    println!("{}", result);
-                }
+        match event {
+            AppEvent::UserCommand(DmCommand::Exit {}) => {
+                println!("Good bye!");
+                break;
             }
-
-            continue;
+            AppEvent::UserCommand(DmCommand::Reset {}) => {
+                ai_chat.clear();
+            }
+            AppEvent::UserCommand(DmCommand::Roll { expressions }) => {
+                let result = caith::Roller::new(&expressions.join(" "))
+                    .unwrap()
+                    .roll()
+                    .unwrap();
+                println!("{}", result);
+            }
+            AppEvent::UserAgent(line) => {
+                log::info!("Sending line to AI agent");
+                ai_chat.push(anthropic::Message::user(line));
+                client.request(&mut ai_chat).await?;
+            }
+            AppEvent::Exit => {
+                log::info!("Exit event received, exiting");
+                break;
+            }
+            _ => {
+                log::warn!("Unhandled event: {:?}", event);
+            }
         }
-
-        log::info!("Sending line to AI agent");
-        ai_chat.push(anthropic::Message::user(line));
-        client.request(&mut ai_chat).await?;
     }
 
     log::info!("Exiting cleanly");
