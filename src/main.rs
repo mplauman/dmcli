@@ -118,16 +118,16 @@ async fn create_client(
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
-    let mut input_handler = InputHandler::new()?;
-
     let settings = load_settings()?;
     init_logging(&settings)?;
 
     let (event_sender, event_receiver) = mpsc::channel::<AppEvent>();
+    let mut input_handler = InputHandler::new(event_sender.clone())?;
     let mut client = create_client(&settings, event_sender).await?;
 
     loop {
-        let event = input_handler.read_input()?;
+        input_handler.read_input().await?;
+        let event = event_receiver.recv().expect("In-memory comms should work");
 
         match event {
             AppEvent::UserCommand(DmCommand::Exit {}) => {
