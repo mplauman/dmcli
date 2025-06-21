@@ -10,6 +10,7 @@ use crate::errors::Error;
 mod anthropic;
 mod commands;
 mod errors;
+mod events;
 mod logger;
 mod obsidian;
 #[cfg(test)]
