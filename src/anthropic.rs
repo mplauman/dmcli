@@ -56,6 +56,7 @@ pub struct Client {
     pub mcp_clients: Vec<McpClient>,
     pub tools: Vec<serde_json::Value>,
     pub max_tokens: i64,
+    pub chat_history: Vec<Message>,
 }
 
 // Test helper functions
@@ -97,7 +98,12 @@ impl Client {
 }
 
 impl Client {
-    pub async fn request(&self, messages: &mut Vec<Message>) -> Result<(), Error> {
+    pub fn clear(&mut self) {
+        self.chat_history.clear();
+    }
+
+    pub async fn push(&mut self, content: String) -> Result<(), Error> {
+        self.chat_history.push(Message::user(content));
         let mut max_tokens_retry_count = 0;
         let max_tokens_max_retries = 5;
 
@@ -107,7 +113,7 @@ impl Client {
                 "max_tokens": self.max_tokens,
                 "system": SYSTEM_PROMPT,
                 "tools": self.tools,
-                "messages": messages,
+                "messages": self.chat_history,
             });
 
             log::debug!("AGENT REQUEST >>> {}", serde_json::to_string(&body)?);
@@ -146,8 +152,8 @@ impl Client {
                     );
 
                     let (assistant, user) = self.invoke_tool(response).await?;
-                    messages.push(assistant);
-                    messages.push(user);
+                    self.chat_history.push(assistant);
+                    self.chat_history.push(user);
                 }
                 Some(StopReason::StopSequence) => {
                     println!(":panic: How do I handle this: {response:?}");
@@ -164,7 +170,7 @@ impl Client {
                         break;
                     }
 
-                    if messages.len() <= 2 {
+                    if self.chat_history.len() <= 2 {
                         println!("Cannot remove any more messages without losing context");
                         break;
                     }
@@ -174,15 +180,19 @@ impl Client {
                         "Max tokens reached. Removing oldest message and retrying. Attempt {} of {}",
                         max_tokens_retry_count, max_tokens_max_retries
                     );
-                    messages.remove(1); // Keep the first message, remove the second oldest
 
-                    // Continue the outer loop to retry
-                    continue;
+                    // For now, remove the oldest message (we might want to be smarter about this)
+                    if self.chat_history.len() > 2 {
+                        self.chat_history.remove(1); // Keep the first message, remove the second oldest
+                    } else {
+                        break;
+                    }
                 }
                 None => {
-                    panic!("No stop reason was provided in {response:?}");
+                    println!("No stop reason provided in response");
+                    break;
                 }
-            };
+            }
         }
 
         Ok(())
@@ -419,6 +429,7 @@ impl ClientBuilder {
             endpoint: self.endpoint,
             mcp_clients: self.mcp_clients,
             max_tokens: self.max_tokens,
+            chat_history: Vec::new(),
             client: reqwest::ClientBuilder::default()
                 .default_headers(headers)
                 .build()?,
@@ -619,6 +630,7 @@ mod tests {
             mcp_clients: vec![],
             tools: vec![],
             max_tokens: 1024,
+            chat_history: Vec::new(),
         };
 
         // Set up messages with a few entries to test removal

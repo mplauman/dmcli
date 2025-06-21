@@ -117,9 +117,7 @@ async fn main() -> Result<(), Error> {
     let settings = load_settings()?;
     init_logging(&settings)?;
 
-    let client = create_client(&settings).await?;
-
-    let mut ai_chat = Vec::<anthropic::Message>::new();
+    let mut client = create_client(&settings).await?;
 
     loop {
         let event = input_handler.read_input()?;
@@ -130,7 +128,7 @@ async fn main() -> Result<(), Error> {
                 break;
             }
             AppEvent::UserCommand(DmCommand::Reset {}) => {
-                ai_chat.clear();
+                client.clear();
             }
             AppEvent::UserCommand(DmCommand::Roll { expressions }) => {
                 let result = caith::Roller::new(&expressions.join(" "))
@@ -141,8 +139,7 @@ async fn main() -> Result<(), Error> {
             }
             AppEvent::UserAgent(line) => {
                 log::info!("Sending line to AI agent");
-                ai_chat.push(anthropic::Message::user(line));
-                client.request(&mut ai_chat).await?;
+                client.push(line).await?;
             }
             AppEvent::Exit => {
                 log::info!("Exit event received, exiting");
