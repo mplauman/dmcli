@@ -17,4 +17,8 @@ impl Tui {
     pub fn render(&mut self) -> Result<(), Error> {
         Ok(())
     }
+
+    pub fn append(&mut self, message: &str) {
+        println!("{}", message);
+    }
 }

@@ -134,7 +134,7 @@ async fn main() -> Result<(), Error> {
         while let Ok(event) = event_receiver.try_recv() {
             match event {
                 AppEvent::UserCommand(DmCommand::Exit {}) => {
-                    println!("Good bye!");
+                    tui.append("Good bye!");
                     done = true;
                 }
                 AppEvent::UserCommand(DmCommand::Reset {}) => {
@@ -145,26 +145,26 @@ async fn main() -> Result<(), Error> {
                         .unwrap()
                         .roll()
                         .unwrap();
-                    println!("{}", result);
+                    tui.append(&result.to_string());
                 }
                 AppEvent::UserAgent(line) => {
                     log::info!("Sending line to AI agent");
 
                     // Start the AI request in a separate task
-                    println!("Sending line to AI agent");
+                    tui.append("Sending line to AI agent");
                     client.push(line).await?;
-                    println!("Done");
+                    tui.append("Done");
                 }
                 AppEvent::Exit => {
                     log::info!("Exit event received, exiting");
                     done = true;
                 }
-                AppEvent::AiResponse(msg) => println!("{}", msg),
-                AppEvent::AiThinking(msg) => println!(":thinking: {}", msg),
-                AppEvent::AiError(msg) => println!(":error: {}", msg),
+                AppEvent::AiResponse(msg) => tui.append(&msg),
+                AppEvent::AiThinking(msg) => tui.append(&format!(":thinking: {}", msg)),
+                AppEvent::AiError(msg) => tui.append(&format!(":error: {}", msg)),
                 AppEvent::AiComplete => {}
-                AppEvent::CommandResult(msg) => println!("{}", msg),
-                AppEvent::CommandError(msg) => println!("Error: {}", msg),
+                AppEvent::CommandResult(msg) => tui.append(&msg),
+                AppEvent::CommandError(msg) => tui.append(&format!("Error: {}", msg)),
             }
         }
 
