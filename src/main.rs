@@ -169,6 +169,9 @@ async fn main() -> Result<(), Error> {
         }
 
         tui.render()?;
+
+        // Small delay to prevent excessive CPU usage
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     }
 
     log::info!("Exiting cleanly");

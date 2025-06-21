@@ -56,20 +56,6 @@ impl From<std::path::StripPrefixError> for Error {
     }
 }
 
-impl From<rustyline::error::ReadlineError> for Error {
-    fn from(error: rustyline::error::ReadlineError) -> Self {
-        use rustyline::error::ReadlineError;
-
-        match error {
-            ReadlineError::Io(e) => Self::Io(e),
-            ReadlineError::Eof => Self::Eof,
-            ReadlineError::Interrupted => Self::Interrupted,
-            ReadlineError::WindowResized => Self::WindowResized,
-            x => panic!("Unexpected readline error: {}", x),
-        }
-    }
-}
-
 impl From<config::ConfigError> for Error {
     fn from(error: config::ConfigError) -> Self {
         panic!("Don't know how to handle {error:?}");
@@ -108,7 +94,7 @@ impl From<rmcp::ServiceError> for Error {
 
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {
-        panic!("Don't know how to handle {}", error);
+        Self::Io(error)
     }
 }
 

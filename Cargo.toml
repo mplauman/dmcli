@@ -31,7 +31,7 @@ reqwest = { version = "0.12.15", default-features = false, features = [
 ] }
 rmcp = { version = "0.1.5", default-features = false }
 rmcp-in-process-transport = { version = "0.0.2", default-features = false }
-rustyline = { version = "15.0.0", default-features = false }
+
 serde = { version = "1.0.219", default-features = false, features = [
     "serde_derive",
 ] }
