@@ -125,56 +125,44 @@ async fn main() -> Result<(), Error> {
     let mut input_handler = InputHandler::new(event_sender.clone())?;
     let mut client = create_client(&settings, event_sender).await?;
 
-    loop {
+    let mut done = false;
+    while !done {
         input_handler.read_input().await?;
-        let event = event_receiver.recv().expect("In-memory comms should work");
 
-        match event {
-            AppEvent::UserCommand(DmCommand::Exit {}) => {
-                println!("Good bye!");
-                break;
-            }
-            AppEvent::UserCommand(DmCommand::Reset {}) => {
-                client.clear();
-            }
-            AppEvent::UserCommand(DmCommand::Roll { expressions }) => {
-                let result = caith::Roller::new(&expressions.join(" "))
-                    .unwrap()
-                    .roll()
-                    .unwrap();
-                println!("{}", result);
-            }
-            AppEvent::UserAgent(line) => {
-                log::info!("Sending line to AI agent");
-
-                // Start the AI request in a separate task
-                println!("Sending line to AI agent");
-                client.push(line).await?;
-                println!("Done");
-
-                while let Ok(event) = event_receiver.try_recv() {
-                    match event {
-                        AppEvent::AiResponse(msg) => println!("{}", msg),
-                        AppEvent::AiThinking(msg) => println!(":thinking: {}", msg),
-                        AppEvent::AiError(msg) => {
-                            println!(":error: {}", msg);
-                            break;
-                        }
-                        AppEvent::AiComplete => {
-                            break;
-                        }
-                        AppEvent::CommandResult(msg) => println!("{}", msg),
-                        AppEvent::CommandError(msg) => println!("Error: {}", msg),
-                        _ => {} // Ignore other event types
-                    }
+        while let Ok(event) = event_receiver.try_recv() {
+            match event {
+                AppEvent::UserCommand(DmCommand::Exit {}) => {
+                    println!("Good bye!");
+                    done = true;
                 }
-            }
-            AppEvent::Exit => {
-                log::info!("Exit event received, exiting");
-                break;
-            }
-            _ => {
-                log::warn!("Unhandled event: {:?}", event);
+                AppEvent::UserCommand(DmCommand::Reset {}) => {
+                    client.clear();
+                }
+                AppEvent::UserCommand(DmCommand::Roll { expressions }) => {
+                    let result = caith::Roller::new(&expressions.join(" "))
+                        .unwrap()
+                        .roll()
+                        .unwrap();
+                    println!("{}", result);
+                }
+                AppEvent::UserAgent(line) => {
+                    log::info!("Sending line to AI agent");
+
+                    // Start the AI request in a separate task
+                    println!("Sending line to AI agent");
+                    client.push(line).await?;
+                    println!("Done");
+                }
+                AppEvent::Exit => {
+                    log::info!("Exit event received, exiting");
+                    done = true;
+                }
+                AppEvent::AiResponse(msg) => println!("{}", msg),
+                AppEvent::AiThinking(msg) => println!(":thinking: {}", msg),
+                AppEvent::AiError(msg) => println!(":error: {}", msg),
+                AppEvent::AiComplete => {}
+                AppEvent::CommandResult(msg) => println!("{}", msg),
+                AppEvent::CommandError(msg) => println!("Error: {}", msg),
             }
         }
     }
