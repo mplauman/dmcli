@@ -4,12 +4,10 @@ use crate::commands::DmCommand;
 pub enum AppEvent {
     UserCommand(DmCommand),
     UserAgent(String),
-    #[allow(dead_code)]
     AiResponse(String),
-    #[allow(dead_code)]
     AiThinking(String),
-    #[allow(dead_code)]
     AiError(String),
+    AiComplete,
     #[allow(dead_code)]
     CommandResult(String),
     #[allow(dead_code)]

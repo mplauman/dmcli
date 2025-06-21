@@ -1,4 +1,5 @@
 use crate::errors::Error;
+use crate::events::AppEvent;
 
 use futures::future;
 use rmcp::{
@@ -6,6 +7,7 @@ use rmcp::{
     model::{CallToolRequestParam, CallToolResult, RawContent},
     service::{DynService, RunningService},
 };
+use std::sync::mpsc;
 
 type McpClient = RunningService<RoleClient, Box<dyn DynService<RoleClient> + 'static>>;
 
@@ -57,6 +59,7 @@ pub struct Client {
     pub tools: Vec<serde_json::Value>,
     pub max_tokens: i64,
     pub chat_history: Vec<Message>,
+    pub event_sender: mpsc::Sender<AppEvent>,
 }
 
 // Test helper functions
@@ -98,6 +101,12 @@ impl Client {
 }
 
 impl Client {
+    fn send_event(&self, event: AppEvent) {
+        if let Err(e) = self.event_sender.send(event) {
+            panic!("Failed to send event to UI thread: {:?}", e);
+        }
+    }
+
     pub fn clear(&mut self) {
         self.chat_history.clear();
     }
@@ -135,51 +144,51 @@ impl Client {
 
             match response.stop_reason {
                 Some(StopReason::EndTurn) => {
-                    println!(
-                        "{}",
-                        response
-                            .extract_message()
-                            .unwrap_or("<expected message not found>".to_owned())
-                    );
+                    let message = response
+                        .extract_message()
+                        .unwrap_or("<expected message not found>".to_owned());
+                    self.send_event(AppEvent::AiResponse(message));
                     break;
                 }
                 Some(StopReason::ToolUse) => {
-                    println!(
-                        ":thonking: {}",
-                        response
-                            .extract_message()
-                            .unwrap_or("<no tool message>".to_owned())
-                    );
+                    let message = response
+                        .extract_message()
+                        .unwrap_or("<no tool message>".to_owned());
+                    self.send_event(AppEvent::AiThinking(message));
 
                     let (assistant, user) = self.invoke_tool(response).await?;
                     self.chat_history.push(assistant);
                     self.chat_history.push(user);
                 }
                 Some(StopReason::StopSequence) => {
-                    println!(":panic: How do I handle this: {response:?}");
+                    self.send_event(AppEvent::AiError(format!(
+                        "Stop sequence encountered: {response:?}"
+                    )));
                     break;
                 }
                 Some(StopReason::MaxTokens) => {
                     max_tokens_retry_count += 1;
 
                     if max_tokens_retry_count >= max_tokens_max_retries {
-                        println!(
+                        self.send_event(AppEvent::AiError(format!(
                             "Max retry attempts reached ({}) after removing oldest messages",
                             max_tokens_max_retries
-                        );
+                        )));
                         break;
                     }
 
                     if self.chat_history.len() <= 2 {
-                        println!("Cannot remove any more messages without losing context");
+                        self.send_event(AppEvent::AiError(
+                            "Cannot remove any more messages without losing context".to_string(),
+                        ));
                         break;
                     }
 
-                    // Remove the oldest non-system message (index 0 is usually the first user message)
-                    println!(
+                    // Remove the oldest message and retry
+                    self.send_event(AppEvent::AiThinking(format!(
                         "Max tokens reached. Removing oldest message and retrying. Attempt {} of {}",
                         max_tokens_retry_count, max_tokens_max_retries
-                    );
+                    )));
 
                     // For now, remove the oldest message (we might want to be smarter about this)
                     if self.chat_history.len() > 2 {
@@ -189,12 +198,15 @@ impl Client {
                     }
                 }
                 None => {
-                    println!("No stop reason provided in response");
+                    self.send_event(AppEvent::AiError(
+                        "No stop reason provided in response".to_string(),
+                    ));
                     break;
                 }
             }
         }
 
+        self.send_event(AppEvent::AiComplete);
         Ok(())
     }
 
@@ -340,6 +352,7 @@ pub struct ClientBuilder {
     pub endpoint: String,
     pub mcp_clients: Vec<McpClient>,
     pub max_tokens: i64,
+    pub event_sender: Option<mpsc::Sender<AppEvent>>,
 }
 
 impl Default for ClientBuilder {
@@ -351,6 +364,7 @@ impl Default for ClientBuilder {
             max_tokens: 8192,
             endpoint: "https://api.anthropic.com/v1/messages".to_owned(),
             mcp_clients: Vec::default(),
+            event_sender: None,
         }
     }
 }
@@ -368,6 +382,13 @@ impl ClientBuilder {
 
     pub fn with_max_tokens(self, max_tokens: i64) -> Self {
         Self { max_tokens, ..self }
+    }
+
+    pub fn with_event_sender(self, event_sender: mpsc::Sender<AppEvent>) -> Self {
+        Self {
+            event_sender: Some(event_sender),
+            ..self
+        }
     }
 
     pub async fn with_toolkit<T: Service<RoleServer> + Send + 'static>(self, toolkit: T) -> Self {
@@ -430,6 +451,7 @@ impl ClientBuilder {
             mcp_clients: self.mcp_clients,
             max_tokens: self.max_tokens,
             chat_history: Vec::new(),
+            event_sender: self.event_sender.expect("event_sender must be set"),
             client: reqwest::ClientBuilder::default()
                 .default_headers(headers)
                 .build()?,
@@ -623,6 +645,7 @@ mod tests {
     #[test]
     fn test_max_tokens_retry_behavior() {
         // Create a basic client for testing
+        let (tx, _rx) = std::sync::mpsc::channel();
         let client = Client {
             model: "claude-3-opus-20240229".to_string(),
             endpoint: "https://api.anthropic.com/v1/messages".to_string(),
@@ -631,6 +654,7 @@ mod tests {
             tools: vec![],
             max_tokens: 1024,
             chat_history: Vec::new(),
+            event_sender: tx,
         };
 
         // Set up messages with a few entries to test removal

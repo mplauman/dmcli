@@ -1,5 +1,6 @@
 use anthropic::ClientBuilder;
 use config::Config;
+use std::sync::mpsc;
 
 use crate::anthropic::Client;
 use crate::commands::DmCommand;
@@ -79,12 +80,17 @@ fn init_logging(settings: &Config) -> Result<(), Error> {
     Ok(())
 }
 
-async fn create_client(config: &Config) -> Result<Client, Error> {
-    let mut builder = ClientBuilder::default().with_api_key(
-        config
-            .get_string("anthropic.api_key")
-            .expect("api_key must be set"),
-    );
+async fn create_client(
+    config: &Config,
+    event_sender: mpsc::Sender<AppEvent>,
+) -> Result<Client, Error> {
+    let mut builder = ClientBuilder::default()
+        .with_api_key(
+            config
+                .get_string("anthropic.api_key")
+                .expect("api_key must be set"),
+        )
+        .with_event_sender(event_sender);
 
     if let Ok(model) = config.get_string("anthropic.model") {
         log::info!("Overriding anthropic model to {}", model);
@@ -117,7 +123,8 @@ async fn main() -> Result<(), Error> {
     let settings = load_settings()?;
     init_logging(&settings)?;
 
-    let mut client = create_client(&settings).await?;
+    let (event_sender, event_receiver) = mpsc::channel::<AppEvent>();
+    let mut client = create_client(&settings, event_sender).await?;
 
     loop {
         let event = input_handler.read_input()?;
@@ -139,7 +146,28 @@ async fn main() -> Result<(), Error> {
             }
             AppEvent::UserAgent(line) => {
                 log::info!("Sending line to AI agent");
+
+                // Start the AI request in a separate task
+                println!("Sending line to AI agent");
                 client.push(line).await?;
+                println!("Done");
+
+                while let Ok(event) = event_receiver.try_recv() {
+                    match event {
+                        AppEvent::AiResponse(msg) => println!("{}", msg),
+                        AppEvent::AiThinking(msg) => println!(":thinking: {}", msg),
+                        AppEvent::AiError(msg) => {
+                            println!(":error: {}", msg);
+                            break;
+                        }
+                        AppEvent::AiComplete => {
+                            break;
+                        }
+                        AppEvent::CommandResult(msg) => println!("{}", msg),
+                        AppEvent::CommandError(msg) => println!("Error: {}", msg),
+                        _ => {} // Ignore other event types
+                    }
+                }
             }
             AppEvent::Exit => {
                 log::info!("Exit event received, exiting");
