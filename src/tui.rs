@@ -47,4 +47,8 @@ impl Tui {
         self.current_line = current_line;
         self.cursor_position = cursor_position;
     }
+
+    pub fn resized(&mut self, _width: u16, _height: u16) {
+        log::debug!("Window resized: {}x{}", _width, _height);
+    }
 }

@@ -81,8 +81,8 @@ impl InputHandler {
 
     fn input_updated(&self) {
         self.send_event(AppEvent::InputUpdated {
-            current_line: self.current_line.clone(),
-            cursor_position: self.cursor_position,
+            line: self.current_line.clone(),
+            cursor: self.cursor_position,
         });
     }
 

@@ -13,8 +13,8 @@ pub enum AppEvent {
     #[allow(dead_code)]
     CommandError(String),
     InputUpdated {
-        current_line: String,
-        cursor_position: usize,
+        line: String,
+        cursor: usize,
     },
     WindowResized {
         width: u16,

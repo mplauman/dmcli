@@ -167,15 +167,8 @@ async fn main() -> Result<(), Error> {
                 AppEvent::AiComplete => {}
                 AppEvent::CommandResult(msg) => tui.append(&msg),
                 AppEvent::CommandError(msg) => tui.append(&format!("Error: {}", msg)),
-                AppEvent::InputUpdated {
-                    current_line,
-                    cursor_position,
-                } => {
-                    tui.input_updated(current_line, cursor_position);
-                }
-                AppEvent::WindowResized { width, height } => {
-                    log::debug!("Window resized: {}x{}", width, height);
-                }
+                AppEvent::InputUpdated { line, cursor } => tui.input_updated(line, cursor),
+                AppEvent::WindowResized { width, height } => tui.resized(width, height),
             }
         }
 
