@@ -1,6 +1,5 @@
 use anthropic::ClientBuilder;
 use config::Config;
-use std::sync::mpsc;
 
 use crate::anthropic::Client;
 use crate::commands::DmCommand;
@@ -83,7 +82,7 @@ fn init_logging(settings: &Config) -> Result<(), Error> {
 
 async fn create_client(
     config: &Config,
-    event_sender: mpsc::Sender<AppEvent>,
+    event_sender: async_channel::Sender<AppEvent>,
 ) -> Result<Client, Error> {
     let mut builder = ClientBuilder::default()
         .with_api_key(
@@ -122,58 +121,60 @@ async fn main() -> Result<(), Error> {
     let settings = load_settings()?;
     init_logging(&settings)?;
 
-    let (event_sender, event_receiver) = mpsc::channel::<AppEvent>();
+    let (event_sender, event_receiver) = async_channel::unbounded::<AppEvent>();
     let mut input_handler = InputHandler::new(event_sender.clone())?;
     let mut client = create_client(&settings, event_sender.clone()).await?;
     let mut tui = crate::tui::Tui::new(&settings, event_sender.clone())?;
 
-    let mut done = false;
-    while !done {
-        tui.render()?;
+    tokio::spawn(async move {
+        loop {
+            input_handler.read_input().await;
+        }
+    });
 
-        input_handler.read_input().await?;
-
-        while let Ok(event) = event_receiver.try_recv() {
-            match event {
-                AppEvent::UserCommand(DmCommand::Exit {}) => {
-                    tui.append("Good bye!");
-                    done = true;
-                }
-                AppEvent::UserCommand(DmCommand::Reset {}) => {
-                    client.clear();
-                }
-                AppEvent::UserCommand(DmCommand::Roll { expressions }) => {
-                    let result = caith::Roller::new(&expressions.join(" "))
-                        .unwrap()
-                        .roll()
-                        .unwrap();
-                    tui.append(&result.to_string());
-                }
-                AppEvent::UserAgent(line) => {
-                    log::info!("Sending line to AI agent");
-
-                    // Start the AI request in a separate task
-                    tui.append("Sending line to AI agent");
-                    client.push(line).await?;
-                    tui.append("Done");
-                }
-                AppEvent::Exit => {
-                    log::info!("Exit event received, exiting");
-                    done = true;
-                }
-                AppEvent::AiResponse(msg) => tui.append(&msg),
-                AppEvent::AiThinking(msg) => tui.append(&format!(":thinking: {}", msg)),
-                AppEvent::AiError(msg) => tui.append(&format!(":error: {}", msg)),
-                AppEvent::AiComplete => {}
-                AppEvent::CommandResult(msg) => tui.append(&msg),
-                AppEvent::CommandError(msg) => tui.append(&format!("Error: {}", msg)),
-                AppEvent::InputUpdated { line, cursor } => tui.input_updated(line, cursor),
-                AppEvent::WindowResized { width, height } => tui.resized(width, height),
+    tui.render()?;
+    while let Ok(event) = event_receiver.recv().await {
+        match event {
+            AppEvent::UserCommand(DmCommand::Exit {}) => {
+                tui.append("Good bye!");
+                break;
             }
+            AppEvent::UserCommand(DmCommand::Reset {}) => {
+                client.clear();
+            }
+            AppEvent::UserCommand(DmCommand::Roll { expressions }) => {
+                let result = caith::Roller::new(&expressions.join(" "))
+                    .unwrap()
+                    .roll()
+                    .unwrap();
+                tui.append(&result.to_string());
+            }
+            AppEvent::UserAgent(line) => {
+                log::info!("Sending line to AI agent");
+
+                // Start the AI request in a separate task
+                tui.append("Sending line to AI agent");
+                if let Err(e) = client.push(line).await {
+                    log::error!("AI request error: {:?}", e);
+                    break;
+                }
+                tui.append("Done");
+            }
+            AppEvent::Exit => {
+                log::info!("Exit event received, exiting");
+                break;
+            }
+            AppEvent::AiResponse(msg) => tui.append(&msg),
+            AppEvent::AiThinking(msg) => tui.append(&format!(":thinking: {}", msg)),
+            AppEvent::AiError(msg) => tui.append(&format!(":error: {}", msg)),
+            AppEvent::AiComplete => {}
+            AppEvent::CommandResult(msg) => tui.append(&msg),
+            AppEvent::CommandError(msg) => tui.append(&format!("Error: {}", msg)),
+            AppEvent::InputUpdated { line, cursor } => tui.input_updated(line, cursor),
+            AppEvent::WindowResized { width, height } => tui.resized(width, height),
         }
 
-        // Small delay to prevent excessive CPU usage
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        tui.render()?
     }
 
     log::info!("Exiting cleanly");

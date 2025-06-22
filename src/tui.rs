@@ -1,6 +1,5 @@
 use crate::errors::Error;
 use crate::events::AppEvent;
-use crate::mpsc;
 use config::Config;
 use crossterm::{
     cursor::{self},
@@ -16,7 +15,10 @@ pub struct Tui {
 }
 
 impl Tui {
-    pub fn new(_config: &Config, _event_sender: mpsc::Sender<AppEvent>) -> Result<Self, Error> {
+    pub fn new(
+        _config: &Config,
+        _event_sender: async_channel::Sender<AppEvent>,
+    ) -> Result<Self, Error> {
         Ok(Self {
             current_line: String::new(),
             cursor_position: 0,
@@ -40,6 +42,15 @@ impl Tui {
     }
 
     pub fn append(&mut self, message: &str) {
+        // Clear the line and move cursor to start of next line
+        execute!(
+            io::stdout(),
+            cursor::MoveToColumn(0),
+            Clear(ClearType::CurrentLine),
+            Print('\n')
+        )
+        .expect("this shouldn't be done in here");
+
         println!("{}", message);
     }
 

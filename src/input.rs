@@ -32,35 +32,28 @@ use crate::errors::Error;
 use crate::events::AppEvent;
 use clap::Parser;
 use crossterm::{
-    cursor::{self},
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers, poll},
-    execute,
-    style::Print,
-    terminal::{self, Clear, ClearType},
+    event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers},
+    terminal::{self},
 };
+use futures::StreamExt;
 use shlex::split;
-use std::io::{self};
-use std::sync::mpsc;
-use std::time::Duration;
 
 /// Maximum number of history entries to keep
 const MAX_HISTORY: usize = 1000;
 
-/// Input polling timeout in milliseconds
-const POLL_TIMEOUT_MS: u64 = 50;
-
 /// Crossterm-based input handler for terminal interaction
 pub struct InputHandler {
-    event_sender: mpsc::Sender<AppEvent>,
+    event_sender: async_channel::Sender<AppEvent>,
     history: Vec<String>,
     history_index: Option<usize>,
     current_line: String,
     cursor_position: usize,
+    event_stream: EventStream,
 }
 
 impl InputHandler {
     /// Creates a new input handler and enables raw terminal mode
-    pub fn new(event_sender: mpsc::Sender<AppEvent>) -> Result<Self, Error> {
+    pub fn new(event_sender: async_channel::Sender<AppEvent>) -> Result<Self, Error> {
         // Enable raw mode for terminal input
         terminal::enable_raw_mode()?;
 
@@ -70,11 +63,12 @@ impl InputHandler {
             history_index: None,
             current_line: String::new(),
             cursor_position: 0,
+            event_stream: EventStream::new(),
         })
     }
 
     fn send_event(&self, event: AppEvent) {
-        if let Err(e) = self.event_sender.send(event) {
+        if let Err(e) = self.event_sender.try_send(event) {
             panic!("Failed to send event to UI thread: {:?}", e);
         }
     }
@@ -86,74 +80,69 @@ impl InputHandler {
         });
     }
 
-    /// Attempts to read and process input with a timeout
+    /// Attempts to read and process input using event streams
     ///
-    /// This method is non-blocking and returns quickly if no input is available.
-    /// It should be called repeatedly in the main event loop.
-    pub async fn read_input(&mut self) -> Result<(), Error> {
-        // Check for input with a short timeout
-        if poll(Duration::from_millis(POLL_TIMEOUT_MS))? {
-            match event::read()? {
-                Event::Key(key_event) => {
-                    match self.handle_key_event(key_event)? {
-                        InputAction::Continue => {}
-                        InputAction::Submit(line) => {
-                            if !line.is_empty() {
-                                self.add_to_history(line.clone());
-                            }
+    /// This method waits for the next event from the terminal and processes it.
+    /// It should be called repeatedly in the input worker thread.
+    pub async fn read_input(&mut self) {
+        let Some(event) = self.event_stream.next().await else {
+            return;
+        };
 
-                            // Clear the line and move cursor to start of next line
-                            execute!(
-                                io::stdout(),
-                                cursor::MoveToColumn(0),
-                                Clear(ClearType::CurrentLine),
-                                Print('\n')
-                            )?;
+        let event = event.unwrap_or_else(|e| {
+            panic!("Input event failure: {:?}", e);
+        });
 
-                            // Parse and send the command/input
-                            let event = if let Some(command) = parse_command(&line) {
-                                AppEvent::UserCommand(command)
-                            } else {
-                                AppEvent::UserAgent(line)
-                            };
-
-                            self.send_event(event);
-
-                            // Reset for next input
-                            self.reset_input_state();
+        match event {
+            Event::Key(key_event) => {
+                match self.handle_key_event(key_event) {
+                    InputAction::Continue => {}
+                    InputAction::Submit(line) => {
+                        if !line.is_empty() {
+                            self.add_to_history(line.clone());
                         }
-                        InputAction::Exit => {
-                            self.send_event(AppEvent::Exit);
-                        }
+
+                        // Parse and send the command/input
+                        let event = if let Some(command) = parse_command(&line) {
+                            AppEvent::UserCommand(command)
+                        } else {
+                            AppEvent::UserAgent(line)
+                        };
+
+                        self.send_event(event);
+
+                        // Reset for next input
+                        self.reset_input_state();
+                    }
+                    InputAction::Exit => {
+                        self.send_event(AppEvent::Exit);
                     }
                 }
-                Event::Resize(width, height) => {
-                    // Handle terminal resize
-                    self.send_event(AppEvent::WindowResized { width, height });
-                }
-                _ => {
-                    // Ignore other events (like mouse events)
-                }
             }
-        }
-
-        Ok(())
+            Event::Resize(width, height) => {
+                // Handle terminal resize
+                self.send_event(AppEvent::WindowResized { width, height });
+            }
+            _ => {
+                // Ignore other events (like mouse events)
+            }
+        };
     }
 
-    fn handle_key_event(&mut self, key_event: KeyEvent) -> Result<InputAction, Error> {
+    fn handle_key_event(&mut self, key_event: KeyEvent) -> InputAction {
         match key_event {
             // Ctrl+C - Exit
             KeyEvent {
                 code: KeyCode::Char('c'),
                 modifiers: KeyModifiers::CONTROL,
                 ..
-            } => Ok(InputAction::Exit),
+            } => InputAction::Exit,
 
             // Enter - Submit line
             KeyEvent {
                 code: KeyCode::Enter,
                 ..
-            } => Ok(InputAction::Submit(self.current_line.clone())),
+            } => InputAction::Submit(self.current_line.clone()),
 
             // Backspace - Delete character before cursor
             KeyEvent {
@@ -165,7 +154,7 @@ impl InputHandler {
                     self.cursor_position -= 1;
                     self.input_updated();
                 }
-                Ok(InputAction::Continue)
+                InputAction::Continue
             }
 
             // Delete - Delete character at cursor
@@ -177,7 +166,7 @@ impl InputHandler {
                     self.current_line.remove(self.cursor_position);
                     self.input_updated();
                 }
-                Ok(InputAction::Continue)
+                InputAction::Continue
             }
 
             // Left arrow - Move cursor left
@@ -190,7 +179,7 @@ impl InputHandler {
                     self.cursor_position -= 1;
                     self.input_updated();
                 }
-                Ok(InputAction::Continue)
+                InputAction::Continue
             }
 
             // Right arrow - Move cursor right
@@ -203,7 +192,7 @@ impl InputHandler {
                     self.cursor_position += 1;
                     self.input_updated();
                 }
-                Ok(InputAction::Continue)
+                InputAction::Continue
             }
 
             // Ctrl+Left - Move cursor left by word
@@ -218,7 +207,7 @@ impl InputHandler {
                     self.cursor_position = new_position;
                     self.input_updated();
                 }
-                Ok(InputAction::Continue)
+                InputAction::Continue
             }
 
             // Ctrl+Right - Move cursor right by word
@@ -233,15 +222,15 @@ impl InputHandler {
                     self.cursor_position = new_position;
                     self.input_updated();
                 }
-                Ok(InputAction::Continue)
+                InputAction::Continue
             }
 
             // Up arrow - Previous history
             KeyEvent {
                 code: KeyCode::Up, ..
             } => {
-                self.navigate_history(HistoryDirection::Previous)?;
-                Ok(InputAction::Continue)
+                self.navigate_history(HistoryDirection::Previous);
+                InputAction::Continue
             }
 
             // Down arrow - Next history
@@ -249,8 +238,8 @@ impl InputHandler {
                 code: KeyCode::Down,
                 ..
             } => {
-                self.navigate_history(HistoryDirection::Next)?;
-                Ok(InputAction::Continue)
+                self.navigate_history(HistoryDirection::Next);
+                InputAction::Continue
             }
 
             // Home - Move to beginning of line
@@ -260,7 +249,7 @@ impl InputHandler {
             } => {
                 self.cursor_position = 0;
                 self.input_updated();
-                Ok(InputAction::Continue)
+                InputAction::Continue
             }
 
             // End - Move to end of line
@@ -269,7 +258,7 @@ impl InputHandler {
             } => {
                 self.cursor_position = self.current_line.len();
                 self.input_updated();
-                Ok(InputAction::Continue)
+                InputAction::Continue
             }
 
             // Ctrl+A - Move to beginning of line
@@ -280,7 +269,7 @@ impl InputHandler {
             } => {
                 self.cursor_position = 0;
                 self.input_updated();
-                Ok(InputAction::Continue)
+                InputAction::Continue
             }
 
             // Ctrl+E - Move to end of line
@@ -291,7 +280,7 @@ impl InputHandler {
             } => {
                 self.cursor_position = self.current_line.len();
                 self.input_updated();
-                Ok(InputAction::Continue)
+                InputAction::Continue
             }
 
             // Ctrl+U - Clear line
@@ -303,7 +292,7 @@ impl InputHandler {
                 self.current_line.clear();
                 self.cursor_position = 0;
                 self.input_updated();
-                Ok(InputAction::Continue)
+                InputAction::Continue
             }
 
             // Ctrl+W - Delete word backward
@@ -314,7 +303,7 @@ impl InputHandler {
             } => {
                 self.delete_word_backward();
                 self.input_updated();
-                Ok(InputAction::Continue)
+                InputAction::Continue
             }
 
             // Regular character input
@@ -326,17 +315,17 @@ impl InputHandler {
                 self.current_line.insert(self.cursor_position, c);
                 self.cursor_position += 1;
                 self.input_updated();
-                Ok(InputAction::Continue)
+                InputAction::Continue
             }
 
             // Ignore other key events
-            _ => Ok(InputAction::Continue),
+            _ => InputAction::Continue,
         }
     }
 
-    fn navigate_history(&mut self, direction: HistoryDirection) -> Result<(), Error> {
+    fn navigate_history(&mut self, direction: HistoryDirection) {
         if self.history.is_empty() {
-            return Ok(());
+            return;
         }
 
         match direction {
@@ -354,7 +343,7 @@ impl InputHandler {
                     }
                     Some(_) => {
                         // Already at the beginning, do nothing
-                        return Ok(());
+                        return;
                     }
                 }
             }
@@ -372,7 +361,7 @@ impl InputHandler {
                     }
                     None => {
                         // No history navigation active, do nothing
-                        return Ok(());
+                        return;
                     }
                 }
             }
@@ -380,7 +369,6 @@ impl InputHandler {
 
         self.cursor_position = self.current_line.len();
         self.input_updated();
-        Ok(())
     }
 
     fn add_to_history(&mut self, line: String) {

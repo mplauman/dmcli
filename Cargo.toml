@@ -4,13 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+async-channel = "2.3.1"
 caith = { version = "4.2.4", default-features = false }
 clap = { version = "4.5.38", default-features = false, features = [
     "derive",
     "std",
 ] }
 config = { version = "0.15.11", default-features = false, features = ["toml"] }
-crossterm = "0.29.0"
+crossterm = { version = "0.29.0", features = ["event-stream"] }
 dirs = { version = "6.0.0", default-features = false }
 futures = "0.3.31"
 ignore = { version = "0.4.23", default-features = false }

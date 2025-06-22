@@ -7,7 +7,6 @@ use rmcp::{
     model::{CallToolRequestParam, CallToolResult, RawContent},
     service::{DynService, RunningService},
 };
-use std::sync::mpsc;
 
 type McpClient = RunningService<RoleClient, Box<dyn DynService<RoleClient> + 'static>>;
 
@@ -59,7 +58,7 @@ pub struct Client {
     pub tools: Vec<serde_json::Value>,
     pub max_tokens: i64,
     pub chat_history: Vec<Message>,
-    pub event_sender: mpsc::Sender<AppEvent>,
+    pub event_sender: async_channel::Sender<AppEvent>,
 }
 
 // Test helper functions
@@ -102,7 +101,7 @@ impl Client {
 
 impl Client {
     fn send_event(&self, event: AppEvent) {
-        if let Err(e) = self.event_sender.send(event) {
+        if let Err(e) = self.event_sender.try_send(event) {
             panic!("Failed to send event to UI thread: {:?}", e);
         }
     }
@@ -352,7 +351,7 @@ pub struct ClientBuilder {
     pub endpoint: String,
     pub mcp_clients: Vec<McpClient>,
     pub max_tokens: i64,
-    pub event_sender: Option<mpsc::Sender<AppEvent>>,
+    pub event_sender: Option<async_channel::Sender<AppEvent>>,
 }
 
 impl Default for ClientBuilder {
@@ -384,7 +383,7 @@ impl ClientBuilder {
         Self { max_tokens, ..self }
     }
 
-    pub fn with_event_sender(self, event_sender: mpsc::Sender<AppEvent>) -> Self {
+    pub fn with_event_sender(self, event_sender: async_channel::Sender<AppEvent>) -> Self {
         Self {
             event_sender: Some(event_sender),
             ..self
@@ -645,7 +644,7 @@ mod tests {
     #[test]
     fn test_max_tokens_retry_behavior() {
         // Create a basic client for testing
-        let (tx, _rx) = std::sync::mpsc::channel();
+        let (tx, _rx) = async_channel::unbounded();
         let client = Client {
             model: "claude-3-opus-20240229".to_string(),
             endpoint: "https://api.anthropic.com/v1/messages".to_string(),
