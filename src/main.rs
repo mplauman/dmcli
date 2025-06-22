@@ -150,6 +150,7 @@ async fn main() -> Result<(), Error> {
                 tui.append(&result.to_string());
             }
             AppEvent::UserAgent(line) => {
+                tui.append("Sending to AI agent...");
                 if !line.is_empty() {
                     client.push(line).await?;
                 }

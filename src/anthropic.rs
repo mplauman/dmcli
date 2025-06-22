@@ -144,7 +144,10 @@ impl Client {
             "messages": self.chat_history,
         });
 
-        log::debug!("AGENT REQUEST >>> {}", serde_json::to_string(&body)?);
+        log::debug!(
+            "AGENT REQUEST >>> {}",
+            serde_json::to_string(&body).unwrap()
+        );
 
         let request = self
             .client
