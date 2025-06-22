@@ -32,14 +32,14 @@ use crate::errors::Error;
 use crate::events::AppEvent;
 use clap::Parser;
 use crossterm::{
-    cursor::{self, MoveLeft, MoveRight, MoveToColumn},
+    cursor::{self},
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers, poll},
     execute,
-    style::{Color, Print, ResetColor, SetForegroundColor},
+    style::Print,
     terminal::{self, Clear, ClearType},
 };
 use shlex::split;
-use std::io::{self, Write};
+use std::io::{self};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -56,7 +56,6 @@ pub struct InputHandler {
     history_index: Option<usize>,
     current_line: String,
     cursor_position: usize,
-    prompt: String,
 }
 
 impl InputHandler {
@@ -71,7 +70,6 @@ impl InputHandler {
             history_index: None,
             current_line: String::new(),
             cursor_position: 0,
-            prompt: ">> ".to_string(),
         })
     }
 
@@ -81,49 +79,60 @@ impl InputHandler {
         }
     }
 
+    fn input_updated(&self) {
+        self.send_event(AppEvent::InputUpdated {
+            current_line: self.current_line.clone(),
+            cursor_position: self.cursor_position,
+        });
+    }
+
     /// Attempts to read and process input with a timeout
     ///
     /// This method is non-blocking and returns quickly if no input is available.
     /// It should be called repeatedly in the main event loop.
     pub async fn read_input(&mut self) -> Result<(), Error> {
-        // Display prompt if this is a fresh input
-        if self.current_line.is_empty() && self.cursor_position == 0 {
-            self.display_prompt()?;
-        }
-
         // Check for input with a short timeout
         if poll(Duration::from_millis(POLL_TIMEOUT_MS))? {
-            if let Event::Key(key_event) = event::read()? {
-                match self.handle_key_event(key_event)? {
-                    InputAction::Continue => {}
-                    InputAction::Submit(line) => {
-                        if !line.is_empty() {
-                            self.add_to_history(line.clone());
+            match event::read()? {
+                Event::Key(key_event) => {
+                    match self.handle_key_event(key_event)? {
+                        InputAction::Continue => {}
+                        InputAction::Submit(line) => {
+                            if !line.is_empty() {
+                                self.add_to_history(line.clone());
+                            }
+
+                            // Clear the line and move cursor to start of next line
+                            execute!(
+                                io::stdout(),
+                                cursor::MoveToColumn(0),
+                                Clear(ClearType::CurrentLine),
+                                Print('\n')
+                            )?;
+
+                            // Parse and send the command/input
+                            let event = if let Some(command) = parse_command(&line) {
+                                AppEvent::UserCommand(command)
+                            } else {
+                                AppEvent::UserAgent(line)
+                            };
+
+                            self.send_event(event);
+
+                            // Reset for next input
+                            self.reset_input_state();
                         }
-
-                        // Clear the line and move cursor to start of next line
-                        execute!(
-                            io::stdout(),
-                            cursor::MoveToColumn(0),
-                            Clear(ClearType::CurrentLine),
-                            Print('\n')
-                        )?;
-
-                        // Parse and send the command/input
-                        let event = if let Some(command) = parse_command(&line) {
-                            AppEvent::UserCommand(command)
-                        } else {
-                            AppEvent::UserAgent(line)
-                        };
-
-                        self.send_event(event);
-
-                        // Reset for next input
-                        self.reset_input_state();
+                        InputAction::Exit => {
+                            self.send_event(AppEvent::Exit);
+                        }
                     }
-                    InputAction::Exit => {
-                        self.send_event(AppEvent::Exit);
-                    }
+                }
+                Event::Resize(width, height) => {
+                    // Handle terminal resize
+                    self.send_event(AppEvent::WindowResized { width, height });
+                }
+                _ => {
+                    // Ignore other events (like mouse events)
                 }
             }
         }
@@ -154,7 +163,7 @@ impl InputHandler {
                 if self.cursor_position > 0 {
                     self.current_line.remove(self.cursor_position - 1);
                     self.cursor_position -= 1;
-                    self.display_prompt()?;
+                    self.input_updated();
                 }
                 Ok(InputAction::Continue)
             }
@@ -166,7 +175,7 @@ impl InputHandler {
             } => {
                 if self.cursor_position < self.current_line.len() {
                     self.current_line.remove(self.cursor_position);
-                    self.display_prompt()?;
+                    self.input_updated();
                 }
                 Ok(InputAction::Continue)
             }
@@ -179,7 +188,7 @@ impl InputHandler {
             } => {
                 if self.cursor_position > 0 {
                     self.cursor_position -= 1;
-                    execute!(io::stdout(), MoveLeft(1))?;
+                    self.input_updated();
                 }
                 Ok(InputAction::Continue)
             }
@@ -192,7 +201,7 @@ impl InputHandler {
             } => {
                 if self.cursor_position < self.current_line.len() {
                     self.cursor_position += 1;
-                    execute!(io::stdout(), MoveRight(1))?;
+                    self.input_updated();
                 }
                 Ok(InputAction::Continue)
             }
@@ -207,7 +216,7 @@ impl InputHandler {
                 let move_distance = self.cursor_position - new_position;
                 if move_distance > 0 {
                     self.cursor_position = new_position;
-                    execute!(io::stdout(), MoveLeft(move_distance as u16))?;
+                    self.input_updated();
                 }
                 Ok(InputAction::Continue)
             }
@@ -222,7 +231,7 @@ impl InputHandler {
                 let move_distance = new_position - self.cursor_position;
                 if move_distance > 0 {
                     self.cursor_position = new_position;
-                    execute!(io::stdout(), MoveRight(move_distance as u16))?;
+                    self.input_updated();
                 }
                 Ok(InputAction::Continue)
             }
@@ -250,7 +259,7 @@ impl InputHandler {
                 ..
             } => {
                 self.cursor_position = 0;
-                execute!(io::stdout(), MoveToColumn(self.prompt.len() as u16))?;
+                self.input_updated();
                 Ok(InputAction::Continue)
             }
 
@@ -259,10 +268,7 @@ impl InputHandler {
                 code: KeyCode::End, ..
             } => {
                 self.cursor_position = self.current_line.len();
-                execute!(
-                    io::stdout(),
-                    MoveToColumn((self.prompt.len() + self.current_line.len()) as u16)
-                )?;
+                self.input_updated();
                 Ok(InputAction::Continue)
             }
 
@@ -273,7 +279,7 @@ impl InputHandler {
                 ..
             } => {
                 self.cursor_position = 0;
-                execute!(io::stdout(), MoveToColumn(self.prompt.len() as u16))?;
+                self.input_updated();
                 Ok(InputAction::Continue)
             }
 
@@ -284,10 +290,7 @@ impl InputHandler {
                 ..
             } => {
                 self.cursor_position = self.current_line.len();
-                execute!(
-                    io::stdout(),
-                    MoveToColumn((self.prompt.len() + self.current_line.len()) as u16)
-                )?;
+                self.input_updated();
                 Ok(InputAction::Continue)
             }
 
@@ -299,7 +302,7 @@ impl InputHandler {
             } => {
                 self.current_line.clear();
                 self.cursor_position = 0;
-                self.display_prompt()?;
+                self.input_updated();
                 Ok(InputAction::Continue)
             }
 
@@ -310,7 +313,7 @@ impl InputHandler {
                 ..
             } => {
                 self.delete_word_backward();
-                self.display_prompt()?;
+                self.input_updated();
                 Ok(InputAction::Continue)
             }
 
@@ -322,29 +325,13 @@ impl InputHandler {
             } => {
                 self.current_line.insert(self.cursor_position, c);
                 self.cursor_position += 1;
-                self.display_prompt()?;
+                self.input_updated();
                 Ok(InputAction::Continue)
             }
 
             // Ignore other key events
             _ => Ok(InputAction::Continue),
         }
-    }
-
-    fn display_prompt(&self) -> Result<(), Error> {
-        // Clear current line and redraw
-        execute!(
-            io::stdout(),
-            cursor::MoveToColumn(0),
-            Clear(ClearType::CurrentLine),
-            SetForegroundColor(Color::Green),
-            Print(&self.prompt),
-            ResetColor,
-            Print(&self.current_line),
-            cursor::MoveToColumn((self.prompt.len() + self.cursor_position) as u16)
-        )?;
-        io::stdout().flush()?;
-        Ok(())
     }
 
     fn navigate_history(&mut self, direction: HistoryDirection) -> Result<(), Error> {
@@ -392,7 +379,7 @@ impl InputHandler {
         }
 
         self.cursor_position = self.current_line.len();
-        self.display_prompt()?;
+        self.input_updated();
         Ok(())
     }
 
@@ -431,12 +418,14 @@ impl InputHandler {
         // Remove the characters
         self.current_line.drain(pos..self.cursor_position);
         self.cursor_position = pos;
+        self.input_updated();
     }
 
     fn reset_input_state(&mut self) {
         self.current_line.clear();
         self.cursor_position = 0;
         self.history_index = None;
+        self.input_updated();
     }
 
     /// Find the position of the previous word boundary (for Ctrl+Left)

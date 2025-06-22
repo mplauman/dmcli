@@ -129,6 +129,8 @@ async fn main() -> Result<(), Error> {
 
     let mut done = false;
     while !done {
+        tui.render()?;
+
         input_handler.read_input().await?;
 
         while let Ok(event) = event_receiver.try_recv() {
@@ -165,10 +167,17 @@ async fn main() -> Result<(), Error> {
                 AppEvent::AiComplete => {}
                 AppEvent::CommandResult(msg) => tui.append(&msg),
                 AppEvent::CommandError(msg) => tui.append(&format!("Error: {}", msg)),
+                AppEvent::InputUpdated {
+                    current_line,
+                    cursor_position,
+                } => {
+                    tui.input_updated(current_line, cursor_position);
+                }
+                AppEvent::WindowResized { width, height } => {
+                    log::debug!("Window resized: {}x{}", width, height);
+                }
             }
         }
-
-        tui.render()?;
 
         // Small delay to prevent excessive CPU usage
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
