@@ -94,11 +94,15 @@ impl InputHandler {
         });
 
         match event {
+            // Ctrl+C: Exit application
             Event::Key(KeyEvent {
                 code: KeyCode::Char('c'),
                 modifiers: KeyModifiers::CONTROL,
                 ..
-            }) => self.send_event(AppEvent::Exit),
+            }) => {
+                self.send_event(AppEvent::Exit);
+            }
+            // Enter: Submit current line as command or user input
             Event::Key(KeyEvent {
                 code: KeyCode::Enter,
                 modifiers: KeyModifiers::NONE,
@@ -121,6 +125,7 @@ impl InputHandler {
                     self.send_event(event);
                 }
             }
+            // Shift+Enter: Insert newline character
             Event::Key(KeyEvent {
                 code: KeyCode::Enter,
                 modifiers: KeyModifiers::SHIFT,
@@ -130,6 +135,7 @@ impl InputHandler {
                 self.cursor_position += 1;
                 self.input_updated();
             }
+            // Backspace: Delete character before cursor
             Event::Key(KeyEvent {
                 code: KeyCode::Backspace,
                 ..
@@ -140,6 +146,7 @@ impl InputHandler {
                     self.input_updated();
                 }
             }
+            // Delete: Delete character at cursor
             Event::Key(KeyEvent {
                 code: KeyCode::Delete,
                 ..
@@ -149,6 +156,7 @@ impl InputHandler {
                     self.input_updated();
                 }
             }
+            // Left arrow: Move cursor one position left
             Event::Key(KeyEvent {
                 code: KeyCode::Left,
                 modifiers: KeyModifiers::NONE,
@@ -159,6 +167,7 @@ impl InputHandler {
                     self.input_updated();
                 }
             }
+            // Right arrow: Move cursor one position right
             Event::Key(KeyEvent {
                 code: KeyCode::Right,
                 modifiers: KeyModifiers::NONE,
@@ -169,6 +178,7 @@ impl InputHandler {
                     self.input_updated();
                 }
             }
+            // Ctrl+Left: Move cursor to previous word boundary
             Event::Key(KeyEvent {
                 code: KeyCode::Left,
                 modifiers: KeyModifiers::CONTROL,
@@ -181,6 +191,7 @@ impl InputHandler {
                     self.input_updated();
                 }
             }
+            // Ctrl+Right: Move cursor to next word boundary
             Event::Key(KeyEvent {
                 code: KeyCode::Right,
                 modifiers: KeyModifiers::CONTROL,
@@ -193,17 +204,20 @@ impl InputHandler {
                     self.input_updated();
                 }
             }
+            // Up arrow: Navigate to previous history entry
             Event::Key(KeyEvent {
                 code: KeyCode::Up, ..
             }) => {
                 self.navigate_history(HistoryDirection::Previous);
             }
+            // Down arrow: Navigate to next history entry
             Event::Key(KeyEvent {
                 code: KeyCode::Down,
                 ..
             }) => {
                 self.navigate_history(HistoryDirection::Next);
             }
+            // Home: Move cursor to beginning of line
             Event::Key(KeyEvent {
                 code: KeyCode::Home,
                 ..
@@ -211,12 +225,14 @@ impl InputHandler {
                 self.cursor_position = 0;
                 self.input_updated();
             }
+            // End: Move cursor to end of line
             Event::Key(KeyEvent {
                 code: KeyCode::End, ..
             }) => {
                 self.cursor_position = self.current_line.len();
                 self.input_updated();
             }
+            // Ctrl+A: Move cursor to beginning of line
             Event::Key(KeyEvent {
                 code: KeyCode::Char('a'),
                 modifiers: KeyModifiers::CONTROL,
@@ -225,6 +241,7 @@ impl InputHandler {
                 self.cursor_position = 0;
                 self.input_updated();
             }
+            // Ctrl+E: Move cursor to end of line
             Event::Key(KeyEvent {
                 code: KeyCode::Char('e'),
                 modifiers: KeyModifiers::CONTROL,
@@ -233,6 +250,7 @@ impl InputHandler {
                 self.cursor_position = self.current_line.len();
                 self.input_updated();
             }
+            // Ctrl+U: Clear entire line
             Event::Key(KeyEvent {
                 code: KeyCode::Char('u'),
                 modifiers: KeyModifiers::CONTROL,
@@ -242,6 +260,7 @@ impl InputHandler {
                 self.cursor_position = 0;
                 self.input_updated();
             }
+            // Ctrl+W: Delete word backward
             Event::Key(KeyEvent {
                 code: KeyCode::Char('w'),
                 modifiers: KeyModifiers::CONTROL,
@@ -250,18 +269,21 @@ impl InputHandler {
                 self.delete_word_backward();
                 self.input_updated();
             }
+            // Page Up: Scroll conversation up
             Event::Key(KeyEvent {
                 code: KeyCode::PageUp,
                 ..
             }) => {
                 self.send_event(AppEvent::TuiScroll(-10));
             }
+            // Page Down: Scroll conversation down
             Event::Key(KeyEvent {
                 code: KeyCode::PageDown,
                 ..
             }) => {
                 self.send_event(AppEvent::TuiScroll(10));
             }
+            // Regular character input: Insert character at cursor
             Event::Key(KeyEvent {
                 code: KeyCode::Char(c),
                 modifiers: KeyModifiers::NONE | KeyModifiers::SHIFT,
@@ -271,10 +293,11 @@ impl InputHandler {
                 self.cursor_position += 1;
                 self.input_updated();
             }
+            // Terminal resize: Update window dimensions
             Event::Resize(width, height) => {
-                // Handle terminal resize
                 self.send_event(AppEvent::WindowResized { width, height });
             }
+            // All other events: Ignore (mouse events, etc.)
             _ => {
                 // Ignore other events (like mouse events)
             }
