@@ -20,5 +20,6 @@ pub enum AppEvent {
         width: u16,
         height: u16,
     },
+    TuiScroll(i16),
     Exit,
 }

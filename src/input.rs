@@ -94,31 +94,36 @@ impl InputHandler {
         });
 
         match event {
-            Event::Key(key_event) => {
-                match self.handle_key_event(key_event) {
-                    InputAction::Continue => {}
-                    InputAction::Submit(line) => {
-                        if !line.is_empty() {
-                            self.add_to_history(line.clone());
-                        }
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('c'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            }) => self.send_event(AppEvent::Exit),
+            Event::Key(KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+                ..
+            }) => {
+                let line = self.current_line.clone();
 
-                        // Parse and send the command/input
-                        let event = if let Some(command) = parse_command(&line) {
-                            AppEvent::UserCommand(command)
-                        } else {
-                            AppEvent::UserAgent(line)
-                        };
+                self.reset_input_state();
 
-                        self.send_event(event);
+                if !line.is_empty() {
+                    self.add_to_history(line.clone());
 
-                        // Reset for next input
-                        self.reset_input_state();
-                    }
-                    InputAction::Exit => {
-                        self.send_event(AppEvent::Exit);
-                    }
+                    // Parse and send the command/input
+                    let event = if let Some(command) = parse_command(&line) {
+                        AppEvent::UserCommand(command)
+                    } else {
+                        AppEvent::UserAgent(line)
+                    };
+
+                    self.send_event(event);
                 }
             }
+            Event::Key(key_event) => match self.handle_key_event(key_event) {
+                InputAction::Continue => {}
+            },
             Event::Resize(width, height) => {
                 // Handle terminal resize
                 self.send_event(AppEvent::WindowResized { width, height });
@@ -131,18 +136,17 @@ impl InputHandler {
 
     fn handle_key_event(&mut self, key_event: KeyEvent) -> InputAction {
         match key_event {
-            // Ctrl+C - Exit
-            KeyEvent {
-                code: KeyCode::Char('c'),
-                modifiers: KeyModifiers::CONTROL,
-                ..
-            } => InputAction::Exit,
-
-            // Enter - Submit line
+            // Shift+Enter - Add newline
             KeyEvent {
                 code: KeyCode::Enter,
+                modifiers: KeyModifiers::SHIFT,
                 ..
-            } => InputAction::Submit(self.current_line.clone()),
+            } => {
+                self.current_line.insert(self.cursor_position, '\n');
+                self.cursor_position += 1;
+                self.input_updated();
+                InputAction::Continue
+            }
 
             // Backspace - Delete character before cursor
             KeyEvent {
@@ -225,7 +229,7 @@ impl InputHandler {
                 InputAction::Continue
             }
 
-            // Up arrow - Previous history
+            // Up arrow - Previous history only
             KeyEvent {
                 code: KeyCode::Up, ..
             } => {
@@ -233,7 +237,7 @@ impl InputHandler {
                 InputAction::Continue
             }
 
-            // Down arrow - Next history
+            // Down arrow - Next history only
             KeyEvent {
                 code: KeyCode::Down,
                 ..
@@ -303,6 +307,24 @@ impl InputHandler {
             } => {
                 self.delete_word_backward();
                 self.input_updated();
+                InputAction::Continue
+            }
+
+            // Page Up - Fast scroll up
+            KeyEvent {
+                code: KeyCode::PageUp,
+                ..
+            } => {
+                self.send_event(AppEvent::TuiScroll(-10));
+                InputAction::Continue
+            }
+
+            // Page Down - Fast scroll down
+            KeyEvent {
+                code: KeyCode::PageDown,
+                ..
+            } => {
+                self.send_event(AppEvent::TuiScroll(10));
                 InputAction::Continue
             }
 
@@ -468,10 +490,6 @@ impl Drop for InputHandler {
 enum InputAction {
     /// Continue input processing
     Continue,
-    /// Submit the completed line
-    Submit(String),
-    /// Exit the application
-    Exit,
 }
 
 /// Direction for history navigation

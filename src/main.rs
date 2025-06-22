@@ -129,29 +129,36 @@ async fn main() -> Result<(), Error> {
     tokio::spawn(async move {
         loop {
             input_handler.read_input().await;
+            log::info!("Got input, reading more");
         }
     });
 
     tui.render()?;
     while let Ok(event) = event_receiver.recv().await {
+        log::info!("Got event, updating");
+
         match event {
             AppEvent::UserCommand(DmCommand::Exit {}) => {
-                tui.append("Good bye!");
+                tui.add_message("Good bye!".to_string(), crate::tui::MessageType::System);
                 break;
             }
             AppEvent::UserCommand(DmCommand::Reset {}) => {
                 client.clear();
+                tui.add_message(
+                    "Conversation reset".to_string(),
+                    crate::tui::MessageType::System,
+                );
             }
             AppEvent::UserCommand(DmCommand::Roll { expressions }) => {
                 let result = caith::Roller::new(&expressions.join(" "))
                     .unwrap()
                     .roll()
                     .unwrap();
-                tui.append(&result.to_string());
+                tui.add_message(format!("🎲 {}", result), crate::tui::MessageType::System);
             }
             AppEvent::UserAgent(line) => {
-                tui.append("Sending to AI agent...");
                 if !line.is_empty() {
+                    tui.add_message(line.clone(), crate::tui::MessageType::User);
                     client.push(line).await?;
                 }
             }
@@ -159,23 +166,31 @@ async fn main() -> Result<(), Error> {
                 log::info!("Exit event received, exiting");
                 break;
             }
-            AppEvent::AiResponse(msg) => tui.append(&msg),
+            AppEvent::AiResponse(msg) => tui.add_message(msg, crate::tui::MessageType::Assistant),
             AppEvent::AiThinking(msg, tools) => {
-                tui.append(&format!(":thinking: {}", msg));
+                tui.add_message(format!("🤔 {}", msg), crate::tui::MessageType::Thinking);
                 client.use_tools(tools).await?;
             }
             AppEvent::AiCompact(attempt, max_attempts) => {
-                tui.append(&format!(
-                    "Max tokens reached. Removing oldest message and retrying. Attempt {} of {}",
-                    attempt, max_attempts
-                ));
+                tui.add_message(
+                    format!(
+                        "Max tokens reached. Removing oldest message and retrying. Attempt {} of {}",
+                        attempt, max_attempts
+                    ),
+                    crate::tui::MessageType::System
+                );
                 client.compact(attempt, max_attempts).await?;
             }
-            AppEvent::AiError(msg) => tui.append(&format!(":error: {}", msg)),
-            AppEvent::CommandResult(msg) => tui.append(&msg),
-            AppEvent::CommandError(msg) => tui.append(&format!("Error: {}", msg)),
+            AppEvent::AiError(msg) => {
+                tui.add_message(format!("❌ {}", msg), crate::tui::MessageType::Error)
+            }
+            AppEvent::CommandResult(msg) => tui.add_message(msg, crate::tui::MessageType::System),
+            AppEvent::CommandError(msg) => {
+                tui.add_message(format!("Error: {}", msg), crate::tui::MessageType::Error)
+            }
             AppEvent::InputUpdated { line, cursor } => tui.input_updated(line, cursor),
             AppEvent::WindowResized { width, height } => tui.resized(width, height),
+            AppEvent::TuiScroll(delta) => tui.handle_scroll(delta),
         }
 
         tui.render()?
