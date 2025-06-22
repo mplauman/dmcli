@@ -5,9 +5,9 @@ pub enum AppEvent {
     UserCommand(DmCommand),
     UserAgent(String),
     AiResponse(String),
-    AiThinking(String),
+    AiThinking(String, Vec<(String, String, serde_json::Value)>),
+    AiCompact(usize, usize),
     AiError(String),
-    AiComplete,
     #[allow(dead_code)]
     CommandResult(String),
     #[allow(dead_code)]

@@ -150,24 +150,27 @@ async fn main() -> Result<(), Error> {
                 tui.append(&result.to_string());
             }
             AppEvent::UserAgent(line) => {
-                log::info!("Sending line to AI agent");
-
-                // Start the AI request in a separate task
-                tui.append("Sending line to AI agent");
-                if let Err(e) = client.push(line).await {
-                    log::error!("AI request error: {:?}", e);
-                    break;
+                if !line.is_empty() {
+                    client.push(line).await?;
                 }
-                tui.append("Done");
             }
             AppEvent::Exit => {
                 log::info!("Exit event received, exiting");
                 break;
             }
             AppEvent::AiResponse(msg) => tui.append(&msg),
-            AppEvent::AiThinking(msg) => tui.append(&format!(":thinking: {}", msg)),
+            AppEvent::AiThinking(msg, tools) => {
+                tui.append(&format!(":thinking: {}", msg));
+                client.use_tools(tools).await?;
+            }
+            AppEvent::AiCompact(attempt, max_attempts) => {
+                tui.append(&format!(
+                    "Max tokens reached. Removing oldest message and retrying. Attempt {} of {}",
+                    attempt, max_attempts
+                ));
+                client.compact(attempt, max_attempts).await?;
+            }
             AppEvent::AiError(msg) => tui.append(&format!(":error: {}", msg)),
-            AppEvent::AiComplete => {}
             AppEvent::CommandResult(msg) => tui.append(&msg),
             AppEvent::CommandError(msg) => tui.append(&format!("Error: {}", msg)),
             AppEvent::InputUpdated { line, cursor } => tui.input_updated(line, cursor),

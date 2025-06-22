@@ -110,126 +110,106 @@ impl Client {
         self.chat_history.clear();
     }
 
-    pub async fn push(&mut self, content: String) -> Result<(), Error> {
-        self.chat_history.push(Message::user(content));
-        let mut max_tokens_retry_count = 0;
-        let max_tokens_max_retries = 5;
-
-        loop {
-            let body = serde_json::json!({
-                "model": self.model.as_str(),
-                "max_tokens": self.max_tokens,
-                "system": SYSTEM_PROMPT,
-                "tools": self.tools,
-                "messages": self.chat_history,
-            });
-
-            log::debug!("AGENT REQUEST >>> {}", serde_json::to_string(&body)?);
-
-            let request = self
-                .client
-                .post(self.endpoint.as_str())
-                .json(&body)
-                .build()?;
-
-            let response = self.client.execute(request).await?;
-            let response = response.text().await?;
-            let response = serde_json::from_str::<ClaudeResponse>(&response).map_err(|x| {
-                log::error!("BAD RESPONSE {:?} <<< {}", x, response);
-                x
-            })?;
-
-            log::debug!("AGENT RESPONSE <<< {}", serde_json::to_string(&response)?);
-
-            match response.stop_reason {
-                Some(StopReason::EndTurn) => {
-                    let message = response
-                        .extract_message()
-                        .unwrap_or("<expected message not found>".to_owned());
-                    self.send_event(AppEvent::AiResponse(message));
-                    break;
-                }
-                Some(StopReason::ToolUse) => {
-                    let message = response
-                        .extract_message()
-                        .unwrap_or("<no tool message>".to_owned());
-                    self.send_event(AppEvent::AiThinking(message));
-
-                    let (assistant, user) = self.invoke_tool(response).await?;
-                    self.chat_history.push(assistant);
-                    self.chat_history.push(user);
-                }
-                Some(StopReason::StopSequence) => {
-                    self.send_event(AppEvent::AiError(format!(
-                        "Stop sequence encountered: {response:?}"
-                    )));
-                    break;
-                }
-                Some(StopReason::MaxTokens) => {
-                    max_tokens_retry_count += 1;
-
-                    if max_tokens_retry_count >= max_tokens_max_retries {
-                        self.send_event(AppEvent::AiError(format!(
-                            "Max retry attempts reached ({}) after removing oldest messages",
-                            max_tokens_max_retries
-                        )));
-                        break;
-                    }
-
-                    if self.chat_history.len() <= 2 {
-                        self.send_event(AppEvent::AiError(
-                            "Cannot remove any more messages without losing context".to_string(),
-                        ));
-                        break;
-                    }
-
-                    // Remove the oldest message and retry
-                    self.send_event(AppEvent::AiThinking(format!(
-                        "Max tokens reached. Removing oldest message and retrying. Attempt {} of {}",
-                        max_tokens_retry_count, max_tokens_max_retries
-                    )));
-
-                    // For now, remove the oldest message (we might want to be smarter about this)
-                    if self.chat_history.len() > 2 {
-                        self.chat_history.remove(1); // Keep the first message, remove the second oldest
-                    } else {
-                        break;
-                    }
-                }
-                None => {
-                    self.send_event(AppEvent::AiError(
-                        "No stop reason provided in response".to_string(),
-                    ));
-                    break;
-                }
-            }
+    pub async fn compact(&mut self, attempt: usize, max_attempts: usize) -> Result<(), Error> {
+        if attempt >= max_attempts {
+            self.send_event(AppEvent::AiError(format!(
+                "Max retry attempts reached ({}) after removing oldest messages",
+                attempt
+            )));
+            return Ok(());
         }
 
-        self.send_event(AppEvent::AiComplete);
+        if self.chat_history.len() <= 2 {
+            self.send_event(AppEvent::AiError(
+                "Cannot remove any more messages without losing context".to_string(),
+            ));
+            return Ok(());
+        }
+
+        self.chat_history.remove(1);
+        self.request(attempt + 1).await
+    }
+
+    pub async fn push(&mut self, content: String) -> Result<(), Error> {
+        self.chat_history.push(Message::user(content));
+        self.request(0).await
+    }
+
+    async fn request(&mut self, attempt: usize) -> Result<(), Error> {
+        let body = serde_json::json!({
+            "model": self.model.as_str(),
+            "max_tokens": self.max_tokens,
+            "system": SYSTEM_PROMPT,
+            "tools": self.tools,
+            "messages": self.chat_history,
+        });
+
+        log::debug!("AGENT REQUEST >>> {}", serde_json::to_string(&body)?);
+
+        let request = self
+            .client
+            .post(self.endpoint.as_str())
+            .json(&body)
+            .build()?;
+
+        let response = self.client.execute(request).await?;
+        let response = response.text().await?;
+        let response = serde_json::from_str::<ClaudeResponse>(&response).map_err(|x| {
+            log::error!("BAD RESPONSE {:?} <<< {}", x, response);
+            x
+        })?;
+
+        log::debug!("AGENT RESPONSE <<< {}", serde_json::to_string(&response)?);
+
+        let event = match response.stop_reason {
+            Some(StopReason::EndTurn) => {
+                let message = response
+                    .extract_message()
+                    .unwrap_or("<expected message not found>".to_owned());
+                AppEvent::AiResponse(message)
+            }
+            Some(StopReason::ToolUse) => {
+                let message = response
+                    .extract_message()
+                    .unwrap_or("<no tool message>".to_owned());
+
+                let tool_uses = response
+                    .content
+                    .iter()
+                    .filter_map(|c| match c {
+                        Content::ToolUse { id, name, input } => {
+                            Some((id.to_owned(), name.to_owned(), input.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+
+                AppEvent::AiThinking(message, tool_uses)
+            }
+            Some(StopReason::StopSequence) => {
+                AppEvent::AiError(format!("Stop sequence encountered: {response:?}"))
+            }
+            Some(StopReason::MaxTokens) => AppEvent::AiCompact(attempt, 5),
+            None => AppEvent::AiError("No stop reason provided in response".to_string()),
+        };
+
+        self.send_event(event);
+
         Ok(())
     }
 
-    async fn invoke_tool(&self, response: ClaudeResponse) -> Result<(Message, Message), Error> {
-        // Extract all tool use requests from the response
-        let tool_uses: Vec<_> = response
-            .content
-            .iter()
-            .filter_map(|c| match c {
-                Content::ToolUse { id, name, input } => {
-                    Some((id.to_owned(), name.to_owned(), input.clone()))
-                }
-                _ => None,
-            })
-            .collect();
-
-        if tool_uses.is_empty() {
+    pub async fn use_tools(
+        &mut self,
+        tools: Vec<(String, String, serde_json::Value)>,
+    ) -> Result<(), Error> {
+        if tools.is_empty() {
             return Err(Error::NoToolUses);
         }
 
-        log::info!("Found {} tool(s) to execute in parallel", tool_uses.len());
+        log::info!("Found {} tool(s) to execute in parallel", tools.len());
 
         // Prepare futures for parallel execution
-        let tool_futures = tool_uses.iter().map(|(id, name, params)| {
+        let tool_futures = tools.iter().map(|(id, name, params)| {
             self.execute_single_tool(id.clone(), name.clone(), params.clone())
         });
 
@@ -241,7 +221,7 @@ impl Client {
         let mut user_content = Vec::new();
 
         // First add all tool uses to the assistant message to match the original response order
-        for (id, name, params) in &tool_uses {
+        for (id, name, params) in &tools {
             assistant_content.push(Content::ToolUse {
                 id: id.clone(),
                 name: name.clone(),
@@ -250,7 +230,7 @@ impl Client {
         }
 
         // Then add all tool results to the user message
-        for (result, (id, name, _)) in tool_results.into_iter().zip(tool_uses.iter()) {
+        for (result, (id, name, _)) in tool_results.into_iter().zip(tools.iter()) {
             match result {
                 Ok(contents) => {
                     user_content.push(Content::ToolResult {
@@ -279,22 +259,17 @@ impl Client {
 
         log::debug!("Tool responses: {user_content:#?}");
 
-        let assistant = Message {
+        self.chat_history.push(Message {
             role: Role::Assistant,
             content: assistant_content,
-        };
+        });
 
-        let user = Message {
+        self.chat_history.push(Message {
             role: Role::User,
             content: user_content,
-        };
+        });
 
-        log::debug!(
-            "Combined tool response: {}",
-            serde_json::to_string(&user).unwrap()
-        );
-
-        Ok((assistant, user))
+        self.request(0).await
     }
 
     // Helper method to execute a single tool across all MCP clients
