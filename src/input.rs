@@ -121,9 +121,156 @@ impl InputHandler {
                     self.send_event(event);
                 }
             }
-            Event::Key(key_event) => match self.handle_key_event(key_event) {
-                InputAction::Continue => {}
-            },
+            Event::Key(KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::SHIFT,
+                ..
+            }) => {
+                self.current_line.insert(self.cursor_position, '\n');
+                self.cursor_position += 1;
+                self.input_updated();
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Backspace,
+                ..
+            }) => {
+                if self.cursor_position > 0 {
+                    self.current_line.remove(self.cursor_position - 1);
+                    self.cursor_position -= 1;
+                    self.input_updated();
+                }
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Delete,
+                ..
+            }) => {
+                if self.cursor_position < self.current_line.len() {
+                    self.current_line.remove(self.cursor_position);
+                    self.input_updated();
+                }
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Left,
+                modifiers: KeyModifiers::NONE,
+                ..
+            }) => {
+                if self.cursor_position > 0 {
+                    self.cursor_position -= 1;
+                    self.input_updated();
+                }
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Right,
+                modifiers: KeyModifiers::NONE,
+                ..
+            }) => {
+                if self.cursor_position < self.current_line.len() {
+                    self.cursor_position += 1;
+                    self.input_updated();
+                }
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Left,
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            }) => {
+                let new_position = self.find_word_boundary_left();
+                let move_distance = self.cursor_position - new_position;
+                if move_distance > 0 {
+                    self.cursor_position = new_position;
+                    self.input_updated();
+                }
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Right,
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            }) => {
+                let new_position = self.find_word_boundary_right();
+                let move_distance = new_position - self.cursor_position;
+                if move_distance > 0 {
+                    self.cursor_position = new_position;
+                    self.input_updated();
+                }
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Up, ..
+            }) => {
+                self.navigate_history(HistoryDirection::Previous);
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Down,
+                ..
+            }) => {
+                self.navigate_history(HistoryDirection::Next);
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Home,
+                ..
+            }) => {
+                self.cursor_position = 0;
+                self.input_updated();
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::End, ..
+            }) => {
+                self.cursor_position = self.current_line.len();
+                self.input_updated();
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('a'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            }) => {
+                self.cursor_position = 0;
+                self.input_updated();
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('e'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            }) => {
+                self.cursor_position = self.current_line.len();
+                self.input_updated();
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('u'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            }) => {
+                self.current_line.clear();
+                self.cursor_position = 0;
+                self.input_updated();
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('w'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            }) => {
+                self.delete_word_backward();
+                self.input_updated();
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::PageUp,
+                ..
+            }) => {
+                self.send_event(AppEvent::TuiScroll(-10));
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::PageDown,
+                ..
+            }) => {
+                self.send_event(AppEvent::TuiScroll(10));
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Char(c),
+                modifiers: KeyModifiers::NONE | KeyModifiers::SHIFT,
+                ..
+            }) => {
+                self.current_line.insert(self.cursor_position, c);
+                self.cursor_position += 1;
+                self.input_updated();
+            }
             Event::Resize(width, height) => {
                 // Handle terminal resize
                 self.send_event(AppEvent::WindowResized { width, height });
@@ -132,217 +279,6 @@ impl InputHandler {
                 // Ignore other events (like mouse events)
             }
         };
-    }
-
-    fn handle_key_event(&mut self, key_event: KeyEvent) -> InputAction {
-        match key_event {
-            // Shift+Enter - Add newline
-            KeyEvent {
-                code: KeyCode::Enter,
-                modifiers: KeyModifiers::SHIFT,
-                ..
-            } => {
-                self.current_line.insert(self.cursor_position, '\n');
-                self.cursor_position += 1;
-                self.input_updated();
-                InputAction::Continue
-            }
-
-            // Backspace - Delete character before cursor
-            KeyEvent {
-                code: KeyCode::Backspace,
-                ..
-            } => {
-                if self.cursor_position > 0 {
-                    self.current_line.remove(self.cursor_position - 1);
-                    self.cursor_position -= 1;
-                    self.input_updated();
-                }
-                InputAction::Continue
-            }
-
-            // Delete - Delete character at cursor
-            KeyEvent {
-                code: KeyCode::Delete,
-                ..
-            } => {
-                if self.cursor_position < self.current_line.len() {
-                    self.current_line.remove(self.cursor_position);
-                    self.input_updated();
-                }
-                InputAction::Continue
-            }
-
-            // Left arrow - Move cursor left
-            KeyEvent {
-                code: KeyCode::Left,
-                modifiers: KeyModifiers::NONE,
-                ..
-            } => {
-                if self.cursor_position > 0 {
-                    self.cursor_position -= 1;
-                    self.input_updated();
-                }
-                InputAction::Continue
-            }
-
-            // Right arrow - Move cursor right
-            KeyEvent {
-                code: KeyCode::Right,
-                modifiers: KeyModifiers::NONE,
-                ..
-            } => {
-                if self.cursor_position < self.current_line.len() {
-                    self.cursor_position += 1;
-                    self.input_updated();
-                }
-                InputAction::Continue
-            }
-
-            // Ctrl+Left - Move cursor left by word
-            KeyEvent {
-                code: KeyCode::Left,
-                modifiers: KeyModifiers::CONTROL,
-                ..
-            } => {
-                let new_position = self.find_word_boundary_left();
-                let move_distance = self.cursor_position - new_position;
-                if move_distance > 0 {
-                    self.cursor_position = new_position;
-                    self.input_updated();
-                }
-                InputAction::Continue
-            }
-
-            // Ctrl+Right - Move cursor right by word
-            KeyEvent {
-                code: KeyCode::Right,
-                modifiers: KeyModifiers::CONTROL,
-                ..
-            } => {
-                let new_position = self.find_word_boundary_right();
-                let move_distance = new_position - self.cursor_position;
-                if move_distance > 0 {
-                    self.cursor_position = new_position;
-                    self.input_updated();
-                }
-                InputAction::Continue
-            }
-
-            // Up arrow - Previous history only
-            KeyEvent {
-                code: KeyCode::Up, ..
-            } => {
-                self.navigate_history(HistoryDirection::Previous);
-                InputAction::Continue
-            }
-
-            // Down arrow - Next history only
-            KeyEvent {
-                code: KeyCode::Down,
-                ..
-            } => {
-                self.navigate_history(HistoryDirection::Next);
-                InputAction::Continue
-            }
-
-            // Home - Move to beginning of line
-            KeyEvent {
-                code: KeyCode::Home,
-                ..
-            } => {
-                self.cursor_position = 0;
-                self.input_updated();
-                InputAction::Continue
-            }
-
-            // End - Move to end of line
-            KeyEvent {
-                code: KeyCode::End, ..
-            } => {
-                self.cursor_position = self.current_line.len();
-                self.input_updated();
-                InputAction::Continue
-            }
-
-            // Ctrl+A - Move to beginning of line
-            KeyEvent {
-                code: KeyCode::Char('a'),
-                modifiers: KeyModifiers::CONTROL,
-                ..
-            } => {
-                self.cursor_position = 0;
-                self.input_updated();
-                InputAction::Continue
-            }
-
-            // Ctrl+E - Move to end of line
-            KeyEvent {
-                code: KeyCode::Char('e'),
-                modifiers: KeyModifiers::CONTROL,
-                ..
-            } => {
-                self.cursor_position = self.current_line.len();
-                self.input_updated();
-                InputAction::Continue
-            }
-
-            // Ctrl+U - Clear line
-            KeyEvent {
-                code: KeyCode::Char('u'),
-                modifiers: KeyModifiers::CONTROL,
-                ..
-            } => {
-                self.current_line.clear();
-                self.cursor_position = 0;
-                self.input_updated();
-                InputAction::Continue
-            }
-
-            // Ctrl+W - Delete word backward
-            KeyEvent {
-                code: KeyCode::Char('w'),
-                modifiers: KeyModifiers::CONTROL,
-                ..
-            } => {
-                self.delete_word_backward();
-                self.input_updated();
-                InputAction::Continue
-            }
-
-            // Page Up - Fast scroll up
-            KeyEvent {
-                code: KeyCode::PageUp,
-                ..
-            } => {
-                self.send_event(AppEvent::TuiScroll(-10));
-                InputAction::Continue
-            }
-
-            // Page Down - Fast scroll down
-            KeyEvent {
-                code: KeyCode::PageDown,
-                ..
-            } => {
-                self.send_event(AppEvent::TuiScroll(10));
-                InputAction::Continue
-            }
-
-            // Regular character input
-            KeyEvent {
-                code: KeyCode::Char(c),
-                modifiers: KeyModifiers::NONE | KeyModifiers::SHIFT,
-                ..
-            } => {
-                self.current_line.insert(self.cursor_position, c);
-                self.cursor_position += 1;
-                self.input_updated();
-                InputAction::Continue
-            }
-
-            // Ignore other key events
-            _ => InputAction::Continue,
-        }
     }
 
     fn navigate_history(&mut self, direction: HistoryDirection) {
@@ -484,12 +420,6 @@ impl Drop for InputHandler {
         // Restore normal terminal mode
         let _ = terminal::disable_raw_mode();
     }
-}
-
-/// Actions that can result from key event processing
-enum InputAction {
-    /// Continue input processing
-    Continue,
 }
 
 /// Direction for history navigation
