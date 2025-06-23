@@ -1,5 +1,6 @@
 use crate::errors::Error;
 use crate::events::AppEvent;
+use crate::markdown::MarkdownRenderer;
 use config::Config;
 use crossterm::{
     execute,
@@ -42,6 +43,7 @@ pub struct Tui {
     scroll_offset: u16,
     terminal_width: u16,
     terminal_height: u16,
+    markdown_renderer: MarkdownRenderer,
 }
 
 impl Tui {
@@ -67,6 +69,7 @@ impl Tui {
             scroll_offset: 0,
             terminal_width: size.width,
             terminal_height: size.height,
+            markdown_renderer: MarkdownRenderer::new(size.width.saturating_sub(4) as usize),
         };
 
         // Add welcome message
@@ -86,6 +89,7 @@ impl Tui {
         let current_line = self.current_line.clone();
         let cursor_position = self.cursor_position;
         let scroll_offset = self.scroll_offset;
+        let markdown_renderer = &self.markdown_renderer;
 
         self.terminal.draw(|f| {
             Self::render_ui_static(
@@ -95,6 +99,7 @@ impl Tui {
                 &current_line,
                 cursor_position,
                 scroll_offset,
+                markdown_renderer,
             );
         })?;
 
@@ -130,6 +135,8 @@ impl Tui {
         log::debug!("Window resized: {}x{}", width, height);
         self.terminal_width = width;
         self.terminal_height = height;
+        self.markdown_renderer
+            .with_width(width.saturating_sub(4) as usize);
         self.update_input_height();
     }
 
@@ -170,6 +177,7 @@ impl Tui {
         current_line: &str,
         cursor_position: usize,
         scroll_offset: u16,
+        markdown_renderer: &MarkdownRenderer,
     ) {
         let size = f.area();
 
@@ -180,7 +188,13 @@ impl Tui {
             .split(size);
 
         // Render conversation window
-        Self::render_conversation_static(f, chunks[0], conversation, scroll_offset);
+        Self::render_conversation_static(
+            f,
+            chunks[0],
+            conversation,
+            scroll_offset,
+            markdown_renderer,
+        );
 
         // Render input window
         Self::render_input_static(f, chunks[1], current_line, cursor_position);
@@ -191,6 +205,7 @@ impl Tui {
         area: ratatui::layout::Rect,
         conversation: &VecDeque<ConversationMessage>,
         scroll_offset: u16,
+        markdown_renderer: &MarkdownRenderer,
     ) {
         let mut text = Text::default();
 
@@ -205,9 +220,14 @@ impl Tui {
                 MessageType::Error => Style::default().fg(Color::Red),
             };
 
-            // Add the message without prefix, just using color styling
-            text.lines
-                .push(Line::from(vec![Span::styled(msg.content.clone(), style)]));
+            // Render markdown content
+            let rendered_content = markdown_renderer.render(&msg.content);
+
+            // Split the rendered content into lines and apply styling
+            for line in rendered_content.lines() {
+                text.lines
+                    .push(Line::from(vec![Span::styled(line.to_string(), style)]));
+            }
 
             // Add an empty line for spacing
             text.lines.push(Line::from(""));

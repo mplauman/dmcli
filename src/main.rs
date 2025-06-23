@@ -13,6 +13,7 @@ mod errors;
 mod events;
 mod input;
 mod logger;
+mod markdown;
 mod obsidian;
 #[cfg(test)]
 mod test_integration;
