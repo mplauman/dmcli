@@ -110,7 +110,7 @@ impl Client {
         self.chat_history.clear();
     }
 
-    pub async fn compact(&mut self, attempt: usize, max_attempts: usize) -> Result<(), Error> {
+    pub fn compact(&mut self, attempt: usize, max_attempts: usize) -> Result<(), Error> {
         if attempt >= max_attempts {
             self.send_event(AppEvent::AiError(format!(
                 "Max retry attempts reached ({}) after removing oldest messages",
@@ -127,15 +127,15 @@ impl Client {
         }
 
         self.chat_history.remove(1);
-        self.request(attempt + 1).await
+        self.request(attempt + 1)
     }
 
-    pub async fn push(&mut self, content: String) -> Result<(), Error> {
+    pub fn push(&mut self, content: String) -> Result<(), Error> {
         self.chat_history.push(Message::user(content));
-        self.request(0).await
+        self.request(0)
     }
 
-    async fn request(&mut self, attempt: usize) -> Result<(), Error> {
+    fn request(&self, attempt: usize) -> Result<(), Error> {
         let body = serde_json::json!({
             "model": self.model.as_str(),
             "max_tokens": self.max_tokens,
@@ -144,10 +144,7 @@ impl Client {
             "messages": self.chat_history,
         });
 
-        log::debug!(
-            "AGENT REQUEST >>> {}",
-            serde_json::to_string(&body).unwrap()
-        );
+        log::debug!("AGENT REQUEST >>> {:#?}", body);
 
         let request = self
             .client
@@ -155,48 +152,79 @@ impl Client {
             .json(&body)
             .build()?;
 
-        let response = self.client.execute(request).await?;
-        let response = response.text().await?;
-        let response = serde_json::from_str::<ClaudeResponse>(&response).map_err(|x| {
-            log::error!("BAD RESPONSE {:?} <<< {}", x, response);
-            x
-        })?;
-
-        log::debug!("AGENT RESPONSE <<< {}", serde_json::to_string(&response)?);
-
-        let event = match response.stop_reason {
-            Some(StopReason::EndTurn) => {
-                let message = response
-                    .extract_message()
-                    .unwrap_or("<expected message not found>".to_owned());
-                AppEvent::AiResponse(message)
+        let event_sender = self.event_sender.clone();
+        let send_event = move |event| {
+            if let Err(e) = event_sender.try_send(event) {
+                panic!("Failed to send event to UI thread: {:?}", e);
             }
-            Some(StopReason::ToolUse) => {
-                let message = response
-                    .extract_message()
-                    .unwrap_or("<no tool message>".to_owned());
-
-                let tool_uses = response
-                    .content
-                    .iter()
-                    .filter_map(|c| match c {
-                        Content::ToolUse { id, name, input } => {
-                            Some((id.to_owned(), name.to_owned(), input.clone()))
-                        }
-                        _ => None,
-                    })
-                    .collect();
-
-                AppEvent::AiThinking(message, tool_uses)
-            }
-            Some(StopReason::StopSequence) => {
-                AppEvent::AiError(format!("Stop sequence encountered: {response:?}"))
-            }
-            Some(StopReason::MaxTokens) => AppEvent::AiCompact(attempt, 5),
-            None => AppEvent::AiError("No stop reason provided in response".to_string()),
         };
 
-        self.send_event(event);
+        let client = self.client.clone();
+        let _background = tokio::task::spawn(async move {
+            let response = match client.execute(request).await {
+                Ok(response) => response,
+                Err(e) => {
+                    log::error!("AI request failed: {:?}", e);
+                    send_event(AppEvent::AiError("failed to send AI request".into()));
+                    return;
+                }
+            };
+
+            let response = match response.text().await {
+                Ok(response) => response,
+                Err(e) => {
+                    log::error!("Failed to read response: {:?}", e);
+                    send_event(AppEvent::AiError("failed to read AI response".into()));
+                    return;
+                }
+            };
+
+            let response = match serde_json::from_str::<ClaudeResponse>(&response) {
+                Ok(response) => response,
+                Err(e) => {
+                    log::error!("Failed to parse response: {:?}", e);
+                    log::error!("BAD RESPONSE {:?}", response);
+                    send_event(AppEvent::AiError("failed to parse AI response".into()));
+                    return;
+                }
+            };
+
+            log::debug!("AGENT RESPONSE <<< {:#?}", response);
+
+            let event = match response.stop_reason {
+                Some(StopReason::EndTurn) => {
+                    let message = response
+                        .extract_message()
+                        .unwrap_or("<expected message not found>".to_owned());
+                    AppEvent::AiResponse(message)
+                }
+                Some(StopReason::ToolUse) => {
+                    let message = response
+                        .extract_message()
+                        .unwrap_or("<no tool message>".to_owned());
+
+                    let tool_uses = response
+                        .content
+                        .iter()
+                        .filter_map(|c| match c {
+                            Content::ToolUse { id, name, input } => {
+                                Some((id.to_owned(), name.to_owned(), input.clone()))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+
+                    AppEvent::AiThinking(message, tool_uses)
+                }
+                Some(StopReason::StopSequence) => {
+                    AppEvent::AiError(format!("Stop sequence encountered: {response:?}"))
+                }
+                Some(StopReason::MaxTokens) => AppEvent::AiCompact(attempt, 5),
+                None => AppEvent::AiError("No stop reason provided in response".to_string()),
+            };
+
+            send_event(event);
+        });
 
         Ok(())
     }
@@ -272,7 +300,7 @@ impl Client {
             content: user_content,
         });
 
-        self.request(0).await
+        self.request(0)
     }
 
     // Helper method to execute a single tool across all MCP clients

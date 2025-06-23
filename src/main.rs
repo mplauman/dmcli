@@ -129,13 +129,13 @@ async fn main() -> Result<(), Error> {
     tokio::spawn(async move {
         loop {
             input_handler.read_input().await;
-            log::info!("Got input, reading more");
+            log::debug!("Got input, reading more");
         }
     });
 
     tui.render()?;
     while let Ok(event) = event_receiver.recv().await {
-        log::info!("Got event, updating");
+        log::debug!("Got event, updating");
 
         match event {
             AppEvent::UserCommand(DmCommand::Exit {}) => {
@@ -159,11 +159,11 @@ async fn main() -> Result<(), Error> {
             AppEvent::UserAgent(line) => {
                 if !line.is_empty() {
                     tui.add_message(line.clone(), crate::tui::MessageType::User);
-                    client.push(line).await?;
+                    client.push(line)?;
                 }
             }
             AppEvent::Exit => {
-                log::info!("Exit event received, exiting");
+                log::debug!("Exit event received, exiting");
                 break;
             }
             AppEvent::AiResponse(msg) => tui.add_message(msg, crate::tui::MessageType::Assistant),
@@ -179,7 +179,7 @@ async fn main() -> Result<(), Error> {
                     ),
                     crate::tui::MessageType::System
                 );
-                client.compact(attempt, max_attempts).await?;
+                client.compact(attempt, max_attempts)?;
             }
             AppEvent::AiError(msg) => {
                 tui.add_message(format!("❌ {}", msg), crate::tui::MessageType::Error)
