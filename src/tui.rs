@@ -200,16 +200,11 @@ impl Tui {
         Self::render_input_static(f, chunks[1], current_line, cursor_position);
     }
 
-    fn render_conversation_static(
-        f: &mut Frame,
-        area: ratatui::layout::Rect,
+    fn render_conversation_lines(
         conversation: &VecDeque<ConversationMessage>,
-        scroll_offset: u16,
         markdown_renderer: &MarkdownRenderer,
-    ) {
-        let mut text = Text::default();
-
-        for msg in conversation {
+    ) -> impl Iterator<Item = Line<'static>> {
+        conversation.iter().rev().flat_map(|msg| {
             let style = match msg.message_type {
                 MessageType::User => Style::default().fg(Color::Cyan),
                 MessageType::Assistant => Style::default().fg(Color::Green),
@@ -224,29 +219,44 @@ impl Tui {
             let rendered_content = markdown_renderer.render(&msg.content);
 
             // Split the rendered content into lines and apply styling
-            for line in rendered_content.lines() {
-                text.lines
-                    .push(Line::from(vec![Span::styled(line.to_string(), style)]));
+            rendered_content
+                .lines()
+                .map(|line| Line::from(vec![Span::styled(line.to_string(), style)]))
+                .chain(std::iter::once(Line::from("")))
+                .rev()
+                .collect::<Vec<_>>()
+        })
+    }
+
+    fn render_conversation_static(
+        f: &mut Frame,
+        area: ratatui::layout::Rect,
+        conversation: &VecDeque<ConversationMessage>,
+        mut scroll_offset: u16,
+        markdown_renderer: &MarkdownRenderer,
+    ) {
+        let mut lines: VecDeque<Line<'static>> = VecDeque::with_capacity(area.height as usize - 2);
+        for line in Self::render_conversation_lines(conversation, markdown_renderer) {
+            if lines.len() == area.height as usize - 2 {
+                // Window is filled up. If there's still scroll offset left then drop the oldest line,
+                // otherwise break.
+                if scroll_offset == 0 {
+                    break;
+                }
+
+                scroll_offset -= 1;
+                lines.pop_back();
             }
 
-            // Add an empty line for spacing
-            text.lines.push(Line::from(""));
+            lines.push_front(line);
         }
+
+        let text = Text::from(lines.into_iter().collect::<Vec<_>>());
 
         let title = "Conversation (PgUp/PgDn: scroll)";
         let conversation_block = Block::default().borders(Borders::ALL).title(title);
 
-        let default_scroll = conversation.len().saturating_sub(area.height as usize / 2) as u16;
-        let actual_scroll = if scroll_offset > 0 {
-            default_scroll.saturating_add(scroll_offset)
-        } else {
-            default_scroll
-        };
-
-        let paragraph = Paragraph::new(text)
-            .block(conversation_block)
-            .wrap(Wrap { trim: true })
-            .scroll((actual_scroll, 0));
+        let paragraph = Paragraph::new(text).block(conversation_block);
 
         f.render_widget(paragraph, area);
     }
