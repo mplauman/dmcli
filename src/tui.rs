@@ -23,6 +23,7 @@ use std::{
 pub struct ConversationMessage {
     pub content: String,
     pub message_type: MessageType,
+    pub lines: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -110,6 +111,7 @@ impl Tui {
         self.conversation.push_back(ConversationMessage {
             content,
             message_type,
+            lines: None,
         });
 
         // Keep conversation history reasonable (last 100 messages)
@@ -127,10 +129,6 @@ impl Tui {
         self.update_input_height();
     }
 
-    pub fn handle_scroll(&mut self, delta: i16) {
-        self.scroll_conversation(delta);
-    }
-
     pub fn resized(&mut self, width: u16, height: u16) {
         log::debug!("Window resized: {}x{}", width, height);
         self.terminal_width = width;
@@ -138,14 +136,18 @@ impl Tui {
         self.markdown_renderer
             .with_width(width.saturating_sub(4) as usize);
         self.update_input_height();
+
+        for message in self.conversation.iter_mut() {
+            message.lines = None;
+        }
     }
 
-    pub fn scroll_conversation(&mut self, delta: i16) {
-        if delta > 0 {
-            self.scroll_offset = self.scroll_offset.saturating_add(delta as u16);
-        } else {
-            self.scroll_offset = self.scroll_offset.saturating_sub((-delta) as u16);
-        }
+    pub fn handle_scroll_back(&mut self) {
+        self.scroll_offset = self.scroll_offset.saturating_add(10_u16);
+    }
+
+    pub fn handle_scroll_forward(&mut self) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(10_u16);
     }
 
     fn update_input_height(&mut self) {

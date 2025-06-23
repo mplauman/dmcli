@@ -274,14 +274,14 @@ impl InputHandler {
                 code: KeyCode::PageUp,
                 ..
             }) => {
-                self.send_event(AppEvent::TuiScroll(10));
+                self.send_event(AppEvent::ScrollBack);
             }
             // Page Down: Scroll conversation down
             Event::Key(KeyEvent {
                 code: KeyCode::PageDown,
                 ..
             }) => {
-                self.send_event(AppEvent::TuiScroll(-10));
+                self.send_event(AppEvent::ScrollForward);
             }
             // Regular character input: Insert character at cursor
             Event::Key(KeyEvent {

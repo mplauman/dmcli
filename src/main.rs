@@ -191,7 +191,8 @@ async fn main() -> Result<(), Error> {
             }
             AppEvent::InputUpdated { line, cursor } => tui.input_updated(line, cursor),
             AppEvent::WindowResized { width, height } => tui.resized(width, height),
-            AppEvent::TuiScroll(delta) => tui.handle_scroll(delta),
+            AppEvent::ScrollBack => tui.handle_scroll_back(),
+            AppEvent::ScrollForward => tui.handle_scroll_forward(),
         }
 
         tui.render()?
