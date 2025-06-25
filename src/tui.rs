@@ -85,22 +85,38 @@ impl Tui {
     pub fn render(&mut self) -> Result<(), Error> {
         self.update_input_height();
 
-        let input_height = self.input_height;
-        let conversation = self.conversation.clone();
-        let current_line = self.current_line.clone();
-        let cursor_position = self.cursor_position;
-        let scroll_offset = self.scroll_offset;
-        let markdown_renderer = &self.markdown_renderer;
+        let size = ratatui::layout::Rect {
+            x: 0,
+            y: 0,
+            width: self.terminal_width,
+            height: self.terminal_height,
+        };
+
+        // Create layout with conversation on top and input on bottom
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(self.input_height)])
+            .split(size);
+
+        let paragraph = Self::render_paragraph(
+            &mut self.conversation,
+            &mut self.markdown_renderer,
+            self.scroll_offset,
+            chunks[0],
+        );
 
         self.terminal.draw(|f| {
+            let viewing_area = f.area();
+
+            assert_eq!(size, viewing_area);
+
             Self::render_ui_static(
                 f,
-                input_height,
-                &conversation,
-                &current_line,
-                cursor_position,
-                scroll_offset,
-                markdown_renderer,
+                self.input_height,
+                &self.current_line,
+                self.cursor_position,
+                paragraph,
+                chunks[0],
             );
         })?;
 
@@ -175,11 +191,10 @@ impl Tui {
     fn render_ui_static(
         f: &mut Frame,
         input_height: u16,
-        conversation: &VecDeque<ConversationMessage>,
         current_line: &str,
         cursor_position: usize,
-        scroll_offset: u16,
-        markdown_renderer: &MarkdownRenderer,
+        paragraph: Paragraph<'_>,
+        paragraph_rect: ratatui::layout::Rect,
     ) {
         let size = f.area();
 
@@ -190,55 +205,64 @@ impl Tui {
             .split(size);
 
         // Render conversation window
-        Self::render_conversation_static(
-            f,
-            chunks[0],
-            conversation,
-            scroll_offset,
-            markdown_renderer,
-        );
+        f.render_widget(paragraph, paragraph_rect);
 
         // Render input window
         Self::render_input_static(f, chunks[1], current_line, cursor_position);
     }
 
-    fn render_conversation_lines(
-        conversation: &VecDeque<ConversationMessage>,
-        markdown_renderer: &MarkdownRenderer,
-    ) -> impl Iterator<Item = Line<'static>> {
-        conversation.iter().rev().flat_map(|msg| {
-            let style = match msg.message_type {
-                MessageType::User => Style::default().fg(Color::Cyan),
-                MessageType::Assistant => Style::default().fg(Color::Green),
-                MessageType::System => Style::default().fg(Color::Yellow),
-                MessageType::Thinking => Style::default()
-                    .fg(Color::Magenta)
-                    .add_modifier(Modifier::ITALIC),
-                MessageType::Error => Style::default().fg(Color::Red),
-            };
-
-            // Render markdown content
-            let rendered_content = markdown_renderer.render(&msg.content);
-
-            // Split the rendered content into lines and apply styling
-            rendered_content
-                .lines()
-                .map(|line| Line::from(vec![Span::styled(line.to_string(), style)]))
-                .chain(std::iter::once(Line::from("")))
-                .rev()
-                .collect::<Vec<_>>()
-        })
-    }
-
-    fn render_conversation_static(
-        f: &mut Frame,
-        area: ratatui::layout::Rect,
-        conversation: &VecDeque<ConversationMessage>,
+    fn render_paragraph(
+        conversation: &mut VecDeque<ConversationMessage>,
+        markdown_renderer: &mut MarkdownRenderer,
         mut scroll_offset: u16,
-        markdown_renderer: &MarkdownRenderer,
-    ) {
+        area: ratatui::layout::Rect,
+    ) -> Paragraph<'static> {
         let mut lines: VecDeque<Line<'static>> = VecDeque::with_capacity(area.height as usize - 2);
-        for line in Self::render_conversation_lines(conversation, markdown_renderer) {
+
+        let rendered_lines = conversation
+            .iter_mut()
+            .rev()
+            .flat_map(|msg| {
+                let style = match msg.message_type {
+                    MessageType::User => Style::default().fg(Color::Cyan),
+                    MessageType::Assistant => Style::default().fg(Color::Green),
+                    MessageType::System => Style::default().fg(Color::Yellow),
+                    MessageType::Thinking => Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::ITALIC),
+                    MessageType::Error => Style::default().fg(Color::Red),
+                };
+
+                let rendered_content = if let Some(cached) = msg.lines.as_ref() {
+                    cached.clone()
+                } else {
+                    let rendered_content = markdown_renderer
+                        .render(&msg.content)
+                        .lines()
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>();
+
+                    msg.lines = Some(rendered_content.clone());
+                    rendered_content
+                };
+
+                // Split the rendered content into lines and apply styling
+                rendered_content
+                    .into_iter()
+                    .map(|line| Line::from(vec![Span::styled(line, style)]))
+                    .chain(std::iter::once(Line::from("")))
+                    .rev()
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        log::info!(
+            "Rendered {} conversations into {:?} lines",
+            conversation.len(),
+            rendered_lines
+        );
+
+        for line in rendered_lines {
             if lines.len() == area.height as usize - 2 {
                 // Window is filled up. If there's still scroll offset left then drop the oldest line,
                 // otherwise break.
@@ -258,9 +282,7 @@ impl Tui {
         let title = "Conversation (PgUp/PgDn: scroll)";
         let conversation_block = Block::default().borders(Borders::ALL).title(title);
 
-        let paragraph = Paragraph::new(text).block(conversation_block);
-
-        f.render_widget(paragraph, area);
+        Paragraph::new(text).block(conversation_block)
     }
 
     fn render_input_static(
