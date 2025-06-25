@@ -101,7 +101,7 @@ impl Tui {
         let paragraph = Self::render_paragraph(
             &mut self.conversation,
             &mut self.markdown_renderer,
-            self.scroll_offset,
+            &mut self.scroll_offset,
             chunks[0],
         );
 
@@ -214,10 +214,11 @@ impl Tui {
     fn render_paragraph(
         conversation: &mut VecDeque<ConversationMessage>,
         markdown_renderer: &mut MarkdownRenderer,
-        mut scroll_offset: u16,
+        in_scroll_offset: &mut u16,
         area: ratatui::layout::Rect,
     ) -> Paragraph<'static> {
         let mut lines: VecDeque<Line<'static>> = VecDeque::with_capacity(area.height as usize - 2);
+        let mut scroll_offset = *in_scroll_offset;
 
         let rendered_lines = conversation
             .iter_mut()
@@ -256,12 +257,6 @@ impl Tui {
             })
             .collect::<Vec<_>>();
 
-        log::info!(
-            "Rendered {} conversations into {:?} lines",
-            conversation.len(),
-            rendered_lines
-        );
-
         for line in rendered_lines {
             if lines.len() == area.height as usize - 2 {
                 // Window is filled up. If there's still scroll offset left then drop the oldest line,
@@ -276,6 +271,9 @@ impl Tui {
 
             lines.push_front(line);
         }
+
+        // Fixes up any over-scrolling
+        *in_scroll_offset -= scroll_offset;
 
         let text = Text::from(lines.into_iter().collect::<Vec<_>>());
 
