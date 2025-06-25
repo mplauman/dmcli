@@ -75,7 +75,7 @@ impl Tui {
 
         // Add welcome message
         tui.add_message(
-            "Welcome to dmcli2! Type your message and press Enter to send. Use Shift+Enter for new lines. Press Tab to switch between input and scroll modes. Press Ctrl+C to quit.".to_string(),
+            "Welcome to dmcli! Type your message and press Enter to send. Send 'roll 2d6' to roll a dice or 'exit' to quit.".to_string(),
             MessageType::System,
         );
 
@@ -106,10 +106,6 @@ impl Tui {
         );
 
         self.terminal.draw(|f| {
-            let viewing_area = f.area();
-
-            assert_eq!(size, viewing_area);
-
             Self::render_ui_static(
                 f,
                 self.input_height,
@@ -289,7 +285,7 @@ impl Tui {
         current_line: &str,
         cursor_position: usize,
     ) {
-        let title = "Input (Enter: send | Shift+Enter: new line | Ctrl+C: quit)";
+        let title = "Input (Enter: send | 'exit': quit)";
         let input_block = Block::default()
             .borders(Borders::ALL)
             .title(title)
@@ -298,9 +294,7 @@ impl Tui {
         let input_area = input_block.inner(area);
 
         let input_text = if current_line.is_empty() {
-            Text::from(
-                "Type your message here... Press Enter to send, Shift+Enter for new line. Commands: /exit, /reset, /roll <dice>",
-            )
+            Text::from("Type your message here... Press Enter to send")
         } else {
             Text::from(current_line)
         };
