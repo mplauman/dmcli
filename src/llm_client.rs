@@ -354,7 +354,7 @@ impl ClientBuilder {
         }
 
         let llm = llm_builder.build()
-            .map_err(|e| Error::Generic(format!("Failed to build LLM client: {}", e)))?;
+            .map_err(|e| Error::LlmBuild(format!("Failed to build LLM client: {}", e)))?;
 
         log::info!("Built LLM client with {} MCP clients", self.mcp_clients.len());
 
@@ -436,7 +436,7 @@ mod tests {
 
     #[test] 
     fn test_error_display() {
-        let error = Error::Generic("Test error".to_string());
-        assert_eq!(format!("{}", error), "Generic error: Test error");
+        let error = Error::LlmBuild("Test error".to_string());
+        assert_eq!(format!("{}", error), "LLM build error: Test error");
     }
 }

@@ -8,7 +8,7 @@ pub enum Error {
     JsonDeserialization(usize, usize, serde_json::error::Category),
     InvalidVaultPath(String),
     Http(reqwest::Error),
-    Generic(String),
+    LlmBuild(String),
 }
 
 impl std::fmt::Display for Error {
@@ -47,7 +47,7 @@ impl std::fmt::Display for Error {
                 path
             ),
             Self::Http(e) => write!(f, "HTTP error: {}", e),
-            Self::Generic(msg) => write!(f, "Generic error: {}", msg),
+            Self::LlmBuild(msg) => write!(f, "LLM build error: {}", msg),
         }
     }
 }
@@ -144,7 +144,7 @@ impl From<Error> for rmcp::Error {
                 None,
             ),
             Error::Http(e) => rmcp::Error::internal_error(format!("HTTP error: {}", e), None),
-            Error::Generic(msg) => rmcp::Error::internal_error(msg, None),
+            Error::LlmBuild(msg) => rmcp::Error::internal_error(format!("LLM build error: {}", msg), None),
         }
     }
 }
