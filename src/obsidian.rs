@@ -617,9 +617,7 @@ impl Obsidian {
 
             // Check if the folder exists
             if !folder_path.exists() || !folder_path.is_dir() {
-                log::warn!(
-                    "Folder does not exist or is not a directory: {folder_path:?}"
-                );
+                log::warn!("Folder does not exist or is not a directory: {folder_path:?}");
                 let error_msg = format!("Folder not found: {folder_clone}");
                 return Ok(CallToolResult::error(vec![Content::text(error_msg)]));
             }

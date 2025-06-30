@@ -104,9 +104,7 @@ async fn create_client(
     }
 
     if let Ok(obsidian_vault) = config.get_string("local.obsidian_vault") {
-        log::info!(
-            "Adding tools for obsidian vault located at {obsidian_vault}"
-        );
+        log::info!("Adding tools for obsidian vault located at {obsidian_vault}");
 
         let obsidian = crate::obsidian::Obsidian::new(obsidian_vault.into());
 
