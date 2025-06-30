@@ -1,6 +1,8 @@
 # dmcli
 
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen)](#)  
+[![CI](https://github.com/mplauman/dmcli/workflows/CI/badge.svg)](https://github.com/mplauman/dmcli/actions/workflows/ci.yml)  
+[![Build and Release](https://github.com/mplauman/dmcli/workflows/Build%20and%20Release/badge.svg)](https://github.com/mplauman/dmcli/actions/workflows/build.yml)  
+[![Security Audit](https://github.com/mplauman/dmcli/workflows/Security%20Audit/badge.svg)](https://github.com/mplauman/dmcli/actions/workflows/security.yml)  
 [![Language](https://img.shields.io/badge/language-Rust-orange)](#)  
 [![License](https://img.shields.io/badge/license-MIT-blue)](#)
 
