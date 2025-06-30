@@ -1,13 +1,12 @@
-use anthropic::ClientBuilder;
 use config::Config;
 
-use crate::anthropic::Client;
+use crate::llm_client::{Client, ClientBuilder};
 use crate::commands::DmCommand;
 use crate::errors::Error;
 use crate::events::AppEvent;
 use crate::input::InputHandler;
 
-mod anthropic;
+mod llm_client;
 mod commands;
 mod errors;
 mod events;
@@ -94,12 +93,12 @@ async fn create_client(
         .with_event_sender(event_sender);
 
     if let Ok(model) = config.get_string("anthropic.model") {
-        log::info!("Overriding anthropic model to {}", model);
+        log::info!("Overriding LLM model to {}", model);
         builder = builder.with_model(model);
     }
 
     if let Ok(max_tokens) = config.get_int("anthropic.max_tokens") {
-        log::info!("Overriding anthropic max tokens to {}", max_tokens);
+        log::info!("Overriding LLM max tokens to {}", max_tokens);
         builder = builder.with_max_tokens(max_tokens)
     }
 

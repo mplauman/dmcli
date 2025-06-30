@@ -16,6 +16,7 @@ crossterm = { version = "0.29.0", features = ["event-stream"] }
 dirs = { version = "6.0.0", default-features = false }
 futures = "0.3.31"
 ignore = { version = "0.4.23", default-features = false }
+llm = { version = "1.3.1", features = ["anthropic", "openai"] }
 log = { version = "0.4.27", default-features = false }
 opentelemetry-appender-log = { version = "0.30.0", default-features = false }
 opentelemetry-otlp = { version = "0.30.0", default-features = false, features = [
