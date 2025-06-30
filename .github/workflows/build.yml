@@ -1,16 +1,17 @@
 name: Build and Release
 
 # This workflow handles building release artifacts and creating releases.
-# Testing and code quality checks are handled by the CI workflow (ci.yml)
-# to avoid duplication. Both workflows run on similar triggers to ensure
-# proper validation before releases.
+# It runs after the CI workflow completes successfully to ensure all
+# quality checks pass before building release artifacts.
 
 on:
+  workflow_run:
+    workflows: ["CI"]
+    types:
+      - completed
+    branches: [main]
   push:
-    branches: [main]
     tags: ["v*"]
-  pull_request:
-    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -19,6 +20,7 @@ jobs:
   build-linux:
     name: Build Linux
     runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'push' }}
     strategy:
       matrix:
         target: [x86_64-unknown-linux-gnu]
