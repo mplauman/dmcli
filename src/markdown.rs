@@ -51,7 +51,7 @@ impl MarkdownRenderer {
                             }
                             // Add prefix based on heading level
                             let prefix = "#".repeat(level as usize);
-                            current_line.push_str(&format!("{} ", prefix));
+                            current_line.push_str(&format!("{prefix} "));
                         }
                         Tag::CodeBlock(_) => {
                             if !current_line.is_empty() {
@@ -79,10 +79,10 @@ impl MarkdownRenderer {
                             let indent = "  ".repeat(list_depth.saturating_sub(1));
                             if !ordered_list_counters.is_empty() {
                                 let counter = ordered_list_counters.last_mut().unwrap();
-                                current_line.push_str(&format!("{}{}. ", indent, counter));
+                                current_line.push_str(&format!("{indent}{counter}. "));
                                 *counter += 1;
                             } else {
-                                current_line.push_str(&format!("{}• ", indent));
+                                current_line.push_str(&format!("{indent}• "));
                             }
                         }
                         Tag::Emphasis => current_line.push('*'),

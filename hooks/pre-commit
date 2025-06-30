@@ -25,7 +25,7 @@ fi
 
 # Run clippy on all Rust files
 echo "Running clippy..."
-if ! cargo clippy -- -D warnings; then
+if ! cargo clippy --all-targets --all-features -- -D warnings; then
     echo "clippy check failed! Please fix the warnings and try again"
     unstash_and_exit 1
 fi

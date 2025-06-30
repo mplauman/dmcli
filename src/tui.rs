@@ -142,7 +142,7 @@ impl Tui {
     }
 
     pub fn resized(&mut self, width: u16, height: u16) {
-        log::debug!("Window resized: {}x{}", width, height);
+        log::debug!("Window resized: {width}x{height}");
         self.terminal_width = width;
         self.terminal_height = height;
         self.markdown_renderer

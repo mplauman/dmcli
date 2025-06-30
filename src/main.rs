@@ -94,20 +94,17 @@ async fn create_client(
         .with_event_sender(event_sender);
 
     if let Ok(model) = config.get_string("anthropic.model") {
-        log::info!("Overriding anthropic model to {}", model);
+        log::info!("Overriding anthropic model to {model}");
         builder = builder.with_model(model);
     }
 
     if let Ok(max_tokens) = config.get_int("anthropic.max_tokens") {
-        log::info!("Overriding anthropic max tokens to {}", max_tokens);
+        log::info!("Overriding anthropic max tokens to {max_tokens}");
         builder = builder.with_max_tokens(max_tokens)
     }
 
     if let Ok(obsidian_vault) = config.get_string("local.obsidian_vault") {
-        log::info!(
-            "Adding tools for obsidian vault located at {}",
-            obsidian_vault
-        );
+        log::info!("Adding tools for obsidian vault located at {obsidian_vault}");
 
         let obsidian = crate::obsidian::Obsidian::new(obsidian_vault.into());
 
@@ -155,7 +152,7 @@ async fn main() -> Result<(), Error> {
                     .unwrap()
                     .roll()
                     .unwrap();
-                tui.add_message(format!("🎲 {}", result), crate::tui::MessageType::System);
+                tui.add_message(format!("🎲 {result}"), crate::tui::MessageType::System);
             }
             AppEvent::UserAgent(line) => {
                 if !line.is_empty() {
@@ -169,25 +166,24 @@ async fn main() -> Result<(), Error> {
             }
             AppEvent::AiResponse(msg) => tui.add_message(msg, crate::tui::MessageType::Assistant),
             AppEvent::AiThinking(msg, tools) => {
-                tui.add_message(format!("🤔 {}", msg), crate::tui::MessageType::Thinking);
+                tui.add_message(format!("🤔 {msg}"), crate::tui::MessageType::Thinking);
                 client.use_tools(tools).await?;
             }
             AppEvent::AiCompact(attempt, max_attempts) => {
                 tui.add_message(
                     format!(
-                        "Max tokens reached. Removing oldest message and retrying. Attempt {} of {}",
-                        attempt, max_attempts
+                        "Max tokens reached. Removing oldest message and retrying. Attempt {attempt} of {max_attempts}"
                     ),
                     crate::tui::MessageType::System
                 );
                 client.compact(attempt, max_attempts)?;
             }
             AppEvent::AiError(msg) => {
-                tui.add_message(format!("❌ {}", msg), crate::tui::MessageType::Error)
+                tui.add_message(format!("❌ {msg}"), crate::tui::MessageType::Error)
             }
             AppEvent::CommandResult(msg) => tui.add_message(msg, crate::tui::MessageType::System),
             AppEvent::CommandError(msg) => {
-                tui.add_message(format!("Error: {}", msg), crate::tui::MessageType::Error)
+                tui.add_message(format!("Error: {msg}"), crate::tui::MessageType::Error)
             }
             AppEvent::InputUpdated { line, cursor } => tui.input_updated(line, cursor),
             AppEvent::WindowResized { width, height } => tui.resized(width, height),
