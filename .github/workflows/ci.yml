@@ -114,5 +114,5 @@ jobs:
       - name: Upload binary
         uses: actions/upload-artifact@v3
         with:
-          name: dmcli2-linux
-          path: target/release/dmcli2
+          name: dmcli-linux
+          path: target/release/dmcli

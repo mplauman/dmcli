@@ -64,18 +64,18 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Strip binary
-        run: strip target/${{ matrix.target }}/release/dmcli2
+        run: strip target/${{ matrix.target }}/release/dmcli
 
       - name: Create archive
         run: |
           mkdir -p dist
-          tar -czf dist/dmcli2-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release dmcli2
+          tar -czf dist/dmcli-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release dmcli
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: dmcli2-${{ matrix.target }}
-          path: dist/dmcli2-${{ matrix.target }}.tar.gz
+          name: dmcli-${{ matrix.target }}
+          path: dist/dmcli-${{ matrix.target }}.tar.gz
 
   release:
     name: Release
@@ -90,8 +90,8 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            dmcli2-x86_64-unknown-linux-gnu/dmcli2-x86_64-unknown-linux-gnu.tar.gz
-            dmcli2-x86_64-unknown-linux-musl/dmcli2-x86_64-unknown-linux-musl.tar.gz
+            dmcli-x86_64-unknown-linux-gnu/dmcli-x86_64-unknown-linux-gnu.tar.gz
+            dmcli-x86_64-unknown-linux-musl/dmcli-x86_64-unknown-linux-musl.tar.gz
           draft: false
           prerelease: false
         env:
