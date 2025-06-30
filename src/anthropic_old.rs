@@ -2,8 +2,6 @@ use crate::errors::Error;
 use crate::events::AppEvent;
 
 use futures::future;
-use llm::backends::anthropic::Anthropic;
-use llm::chat::{ChatMessage, ChatProvider, ChatRole, MessageType as LlmMessageType};
 use rmcp::{
     RoleClient, RoleServer, Service, ServiceExt,
     model::{CallToolRequestParam, CallToolResult, RawContent},
@@ -56,7 +54,6 @@ pub struct Client {
     pub model: String,
     pub endpoint: String,
     pub client: reqwest::Client,
-    pub llm_client: Anthropic,
     pub mcp_clients: Vec<McpClient>,
     pub tools: Vec<serde_json::Value>,
     pub max_tokens: i64,
@@ -137,17 +134,21 @@ impl Client {
     }
 
     fn request(&self, attempt: usize) -> Result<(), Error> {
-        // Convert our internal message format to the llm crate's format
-        let llm_messages: Vec<ChatMessage> = self.chat_history.iter().map(|msg| {
-            ChatMessage {
-                role: match msg.role {
-                    Role::User => ChatRole::User,
-                    Role::Assistant => ChatRole::Assistant,
-                },
-                message_type: LlmMessageType::Text,  // Simplified for now
-                content: msg.extract_text().unwrap_or_default(),
-            }
-        }).collect();
+        let body = serde_json::json!({
+            "model": self.model.as_str(),
+            "max_tokens": self.max_tokens,
+            "system": SYSTEM_PROMPT,
+            "tools": self.tools,
+            "messages": self.chat_history,
+        });
+
+        log::debug!("AGENT REQUEST >>> {body:#?}");
+
+        let request = self
+            .client
+            .post(self.endpoint.as_str())
+            .json(&body)
+            .build()?;
 
         let event_sender = self.event_sender.clone();
         let send_event = move |event| {
@@ -156,41 +157,9 @@ impl Client {
             }
         };
 
-        // Create a new Anthropic client for this request
-        // TODO: This is not ideal, but the LLM client doesn't implement Clone
-        // We should explore if there's a better way to handle this
-        let api_key = self.llm_client.api_key.clone();
-        let model = self.llm_client.model.clone();
-        let max_tokens = self.llm_client.max_tokens;
-        let temperature = self.llm_client.temperature;
-        let timeout_seconds = self.llm_client.timeout_seconds;
-        let system = self.llm_client.system.clone();
-        let stream = self.llm_client.stream;
-        let top_p = self.llm_client.top_p;
-        let top_k = self.llm_client.top_k;
-        let tools = self.llm_client.tools.clone();
-        let tool_choice = self.llm_client.tool_choice.clone();
-        let reasoning = self.llm_client.reasoning;
-        let thinking_budget_tokens = self.llm_client.thinking_budget_tokens;
-
+        let client = self.client.clone();
         let _background = tokio::task::spawn(async move {
-            let llm_client = Anthropic::new(
-                api_key,
-                Some(model),
-                Some(max_tokens),
-                Some(temperature),
-                Some(timeout_seconds),
-                Some(system),
-                Some(stream),
-                top_p,
-                top_k,
-                tools,
-                tool_choice,
-                Some(reasoning),
-                thinking_budget_tokens,
-            );
-
-            let response = match llm_client.chat_with_tools(&llm_messages, None).await {
+            let response = match client.execute(request).await {
                 Ok(response) => response,
                 Err(e) => {
                     log::error!("AI request failed: {e:?}");
@@ -199,20 +168,60 @@ impl Client {
                 }
             };
 
-            // Check if there are tool calls in the response
-            if let Some(tool_calls) = response.tool_calls() {
-                let message = response.text().unwrap_or_default();
-                let tools: Vec<(String, String, serde_json::Value)> = tool_calls.iter().map(|tc| {
-                    let params: serde_json::Value = serde_json::from_str(&tc.function.arguments)
-                        .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()));
-                    (tc.id.clone(), tc.function.name.clone(), params)
-                }).collect();
-                
-                send_event(AppEvent::AiThinking(message, tools));
-            } else {
-                let message = response.text().unwrap_or_default();
-                send_event(AppEvent::AiResponse(message));
-            }
+            let response = match response.text().await {
+                Ok(response) => response,
+                Err(e) => {
+                    log::error!("Failed to read response: {e:?}");
+                    send_event(AppEvent::AiError("failed to read AI response".into()));
+                    return;
+                }
+            };
+
+            let response = match serde_json::from_str::<ClaudeResponse>(&response) {
+                Ok(response) => response,
+                Err(e) => {
+                    log::error!("Failed to parse response: {e:?}");
+                    log::error!("BAD RESPONSE {response:?}");
+                    send_event(AppEvent::AiError("failed to parse AI response".into()));
+                    return;
+                }
+            };
+
+            log::debug!("AGENT RESPONSE <<< {response:#?}");
+
+            let event = match response.stop_reason {
+                Some(StopReason::EndTurn) => {
+                    let message = response
+                        .extract_message()
+                        .unwrap_or("<expected message not found>".to_owned());
+                    AppEvent::AiResponse(message)
+                }
+                Some(StopReason::ToolUse) => {
+                    let message = response
+                        .extract_message()
+                        .unwrap_or("<no tool message>".to_owned());
+
+                    let tool_uses = response
+                        .content
+                        .iter()
+                        .filter_map(|c| match c {
+                            Content::ToolUse { id, name, input } => {
+                                Some((id.to_owned(), name.to_owned(), input.clone()))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+
+                    AppEvent::AiThinking(message, tool_uses)
+                }
+                Some(StopReason::StopSequence) => {
+                    AppEvent::AiError(format!("Stop sequence encountered: {response:?}"))
+                }
+                Some(StopReason::MaxTokens) => AppEvent::AiCompact(attempt, 5),
+                None => AppEvent::AiError("No stop reason provided in response".to_string()),
+            };
+
+            send_event(event);
         });
 
         Ok(())
@@ -400,29 +409,11 @@ impl ClientBuilder {
     }
 
     pub async fn build(self) -> Result<Client, Error> {
-        let api_key = self.api_key.expect("api-key is set");
-        
-        // Create the llm Anthropic client
-        let llm_client = Anthropic::new(
-            api_key.clone(),
-            Some(self.model.clone()),
-            Some(self.max_tokens as u32),
-            None, // temperature - use default
-            None, // timeout - use default
-            Some(SYSTEM_PROMPT.to_string()),
-            Some(false), // stream - not using streaming for now
-            None, // top_p
-            None, // top_k
-            None, // tools - will be handled separately
-            None, // tool_choice
-            None, // reasoning
-            None, // thinking_budget_tokens
-        );
-
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             "x-api-key",
-            api_key
+            self.api_key
+                .expect("api-key is set")
                 .parse()
                 .expect("api-key is an HTTP header"),
         );
@@ -457,7 +448,6 @@ impl ClientBuilder {
         log::info!("Added tools: {}", serde_json::to_string(&tools).unwrap());
 
         let client = Client {
-            llm_client,
             tools,
             model: self.model,
             endpoint: self.endpoint,
@@ -485,21 +475,6 @@ impl Message {
         Message {
             role: Role::User,
             content: vec![Content::Text { text }],
-        }
-    }
-
-    pub fn extract_text(&self) -> Option<String> {
-        let texts: Vec<String> = self.content.iter()
-            .filter_map(|c| match c {
-                Content::Text { text } => Some(text.clone()),
-                _ => None,
-            })
-            .collect();
-        
-        if texts.is_empty() {
-            None
-        } else {
-            Some(texts.join("\n"))
         }
     }
 }
