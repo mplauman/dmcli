@@ -69,7 +69,7 @@ impl InputHandler {
 
     fn send_event(&self, event: AppEvent) {
         if let Err(e) = self.event_sender.try_send(event) {
-            panic!("Failed to send event to UI thread: {:?}", e);
+            panic!("Failed to send event to UI thread: {e:?}");
         }
     }
 
@@ -90,7 +90,7 @@ impl InputHandler {
         };
 
         let event = event.unwrap_or_else(|e| {
-            panic!("Input event failure: {:?}", e);
+            panic!("Input event failure: {e:?}");
         });
 
         match event {

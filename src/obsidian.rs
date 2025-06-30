@@ -239,7 +239,7 @@ impl MetadataCache {
         // Try to read from cache firsts
         let cached_data = match self.cache.read() {
             Ok(cache_read) => cache_read.get(&key).cloned(),
-            Err(x) => panic!("Cache RW lock is poisoned: {}", x),
+            Err(x) => panic!("Cache RW lock is poisoned: {x}"),
         };
         if cached_data.is_some() {
             return cached_data;
@@ -337,12 +337,12 @@ impl Obsidian {
         let mut files = Vec::<PathBuf>::new();
         for result in walk {
             let Ok(entry) = result else {
-                log::warn!("Failed to read {:?}", result);
+                log::warn!("Failed to read {result:?}");
                 continue;
             };
 
             let Some(file_type) = entry.file_type() else {
-                log::warn!("Failed to get file type from {:?}", entry);
+                log::warn!("Failed to get file type from {entry:?}");
                 continue;
             };
 
@@ -382,7 +382,7 @@ impl Obsidian {
 
         for entry_result in std::fs::read_dir(path)? {
             let Ok(entry) = entry_result else {
-                log::warn!("Skipping invalid entry: {:?}", entry_result);
+                log::warn!("Skipping invalid entry: {entry_result:?}");
                 continue;
             };
 
@@ -446,7 +446,7 @@ impl Obsidian {
     ) -> Result<CallToolResult, rmcp::Error> {
         let base_path = match folder_path.as_ref() {
             Some(folder) => {
-                log::info!("Finding folder structure for {}", folder);
+                log::info!("Finding folder structure for {folder}");
                 self.validate_vault_path(folder)?
             }
             None => {
@@ -464,7 +464,7 @@ impl Obsidian {
 
         log::info!("Building directory structure for {}", base_path.display());
         let structure = self.build_directory_structure(base_path).map_err(|e| {
-            log::warn!("Cannot get structure: {}", e);
+            log::warn!("Cannot get structure: {e}");
             DirectoryInfo {
                 name: "vault".into(),
                 files: Vec::default(),
@@ -532,9 +532,9 @@ impl Obsidian {
         let full_path = self.validate_vault_path(&filename)?;
 
         if !full_path.exists() || !full_path.is_file() {
-            log::warn!("File does not exist or is not a file: {}", filename_copy);
+            log::warn!("File does not exist or is not a file: {filename_copy}");
             return Err(rmcp::Error::invalid_request(
-                format!("File not found: {}", filename_copy),
+                format!("File not found: {filename_copy}"),
                 None,
             ));
         }
@@ -544,7 +544,7 @@ impl Obsidian {
             Ok(m) => m,
             Err(e) => {
                 return Err(rmcp::Error::internal_error(
-                    format!("Failed to read file metadata: {}", e),
+                    format!("Failed to read file metadata: {e}"),
                     None,
                 ));
             }
@@ -618,10 +618,9 @@ impl Obsidian {
             // Check if the folder exists
             if !folder_path.exists() || !folder_path.is_dir() {
                 log::warn!(
-                    "Folder does not exist or is not a directory: {:?}",
-                    folder_path
+                    "Folder does not exist or is not a directory: {folder_path:?}"
                 );
-                let error_msg = format!("Folder not found: {}", folder_clone);
+                let error_msg = format!("Folder not found: {folder_clone}");
                 return Ok(CallToolResult::error(vec![Content::text(error_msg)]));
             }
 
@@ -826,7 +825,7 @@ impl Obsidian {
             case_sensitive,
         }: SearchWithContextRequest,
     ) -> Result<CallToolResult, rmcp::Error> {
-        log::info!("Searching with context for: {}", query);
+        log::info!("Searching with context for: {query}");
 
         let context_lines = context_lines.unwrap_or(2);
         let is_regex = regex.unwrap_or(false);
@@ -835,7 +834,7 @@ impl Obsidian {
         // Build regex pattern
         let regex_pattern = if is_regex {
             Regex::new(&query).map_err(|e| {
-                rmcp::Error::invalid_request(format!("Invalid regex pattern: {}", e), None)
+                rmcp::Error::invalid_request(format!("Invalid regex pattern: {e}"), None)
             })?
         } else {
             // Escape special regex characters for literal search
@@ -843,7 +842,7 @@ impl Obsidian {
             if is_case_sensitive {
                 Regex::new(&escaped_query).unwrap()
             } else {
-                Regex::new(&format!("(?i){}", escaped_query)).unwrap()
+                Regex::new(&format!("(?i){escaped_query}")).unwrap()
             }
         };
 
@@ -938,7 +937,7 @@ impl Obsidian {
         // Verify the target file exists
         if !target_file_path.exists() {
             return Err(rmcp::Error::invalid_request(
-                format!("File '{}' does not exist", filename),
+                format!("File '{filename}' does not exist"),
                 None,
             ));
         }
@@ -951,7 +950,7 @@ impl Obsidian {
 
         // Read the target file to get its outgoing links
         let target_content = std::fs::read_to_string(&target_file_path).map_err(|e| {
-            rmcp::Error::internal_error(format!("Failed to read target file: {}", e), None)
+            rmcp::Error::internal_error(format!("Failed to read target file: {e}"), None)
         })?;
 
         let outgoing_links = extract_links_from_content(&target_content);
@@ -988,8 +987,8 @@ impl Obsidian {
                     // Handle different link formats
                     link == target_name
                         || link == &filename
-                        || link.ends_with(&format!("/{}", target_name))
-                        || link.ends_with(&format!("/{}", filename))
+                        || link.ends_with(&format!("/{target_name}"))
+                        || link.ends_with(&format!("/{filename}"))
                 });
 
                 if links_to_target {

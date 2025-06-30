@@ -16,43 +16,38 @@ impl std::fmt::Display for Error {
 
         match self {
             Self::NoToolUses => write!(f, "No tools provided for execution"),
-            Self::Io(e) => write!(f, "IO error: {}", e),
+            Self::Io(e) => write!(f, "IO error: {e}"),
             Self::Eof => write!(f, "EOF"),
             Self::Interrupted => write!(f, "Interrupted"),
             Self::WindowResized => write!(f, "Window resized"),
             Self::JsonDeserialization(line, column, Category::Io) => write!(
                 f,
-                "IO failure while deserializing JSON (line {}, col {})",
-                line, column
+                "IO failure while deserializing JSON (line {line}, col {column})"
             ),
             Self::JsonDeserialization(line, column, Category::Eof) => write!(
                 f,
-                "EOF while deserializing JSON (line {}, col {})",
-                line, column
+                "EOF while deserializing JSON (line {line}, col {column})"
             ),
             Self::JsonDeserialization(line, column, Category::Data) => write!(
                 f,
-                "Data conversion error while deserializing JSON (line {}, col {})",
-                line, column
+                "Data conversion error while deserializing JSON (line {line}, col {column})"
             ),
             Self::JsonDeserialization(line, column, Category::Syntax) => write!(
                 f,
-                "Syntax error while deserializing JSON (line {}, col {})",
-                line, column
+                "Syntax error while deserializing JSON (line {line}, col {column})"
             ),
             Self::InvalidVaultPath(path) => write!(
                 f,
-                "Invalid vault path '{}': paths must be relative to the vault root, not absolute",
-                path
+                "Invalid vault path '{path}': paths must be relative to the vault root, not absolute"
             ),
-            Self::Http(e) => write!(f, "HTTP error: {}", e),
+            Self::Http(e) => write!(f, "HTTP error: {e}"),
         }
     }
 }
 
 impl From<std::path::StripPrefixError> for Error {
     fn from(error: std::path::StripPrefixError) -> Self {
-        panic!("Don't know how to handle {}", error);
+        panic!("Don't know how to handle {error}");
     }
 }
 
@@ -104,7 +99,7 @@ impl From<Error> for rmcp::Error {
 
         match val {
             Error::NoToolUses => rmcp::Error::invalid_request("No tool uses found", None),
-            Error::Io(e) => rmcp::Error::internal_error(format!("IO error: {}", e), None),
+            Error::Io(e) => rmcp::Error::internal_error(format!("IO error: {e}"), None),
             Error::Eof => rmcp::Error::internal_error("Unhandled EOF during tool usage", None),
             Error::Interrupted => {
                 rmcp::Error::internal_error("Interrupted during tool usage", None)
@@ -114,34 +109,29 @@ impl From<Error> for rmcp::Error {
             }
             Error::JsonDeserialization(line, column, Category::Io) => rmcp::Error::internal_error(
                 format!(
-                    "IO failure during tool processing, decoding intermediate JSON. Line {}, col {}.",
-                    line, column,
+                    "IO failure during tool processing, decoding intermediate JSON. Line {line}, col {column}."
                 ),
                 None,
             ),
             Error::JsonDeserialization(line, column, Category::Eof) => rmcp::Error::internal_error(
                 format!(
-                    "Unexpected EOF during tool processing, decoding intermediate JSON. Line {}, col {}.",
-                    line, column,
+                    "Unexpected EOF during tool processing, decoding intermediate JSON. Line {line}, col {column}."
                 ),
                 None,
             ),
             Error::JsonDeserialization(line, column, Category::Data) => panic!(
-                "Bad data conversion during tool use while decoding JSON. Incompatible data on line {}, col {}",
-                line, column
+                "Bad data conversion during tool use while decoding JSON. Incompatible data on line {line}, col {column}"
             ),
             Error::JsonDeserialization(line, column, Category::Syntax) => panic!(
-                "Invalid JSON syntax during tool use while decoding JSON on line {}, column {}",
-                line, column
+                "Invalid JSON syntax during tool use while decoding JSON on line {line}, column {column}"
             ),
             Error::InvalidVaultPath(path) => rmcp::Error::invalid_request(
                 format!(
-                    "Invalid vault path '{}': paths must be relative to the vault root, not absolute",
-                    path
+                    "Invalid vault path '{path}': paths must be relative to the vault root, not absolute"
                 ),
                 None,
             ),
-            Error::Http(e) => rmcp::Error::internal_error(format!("HTTP error: {}", e), None),
+            Error::Http(e) => rmcp::Error::internal_error(format!("HTTP error: {e}"), None),
         }
     }
 }
@@ -182,7 +172,7 @@ mod tests {
         ];
 
         for error in errors {
-            let display_str = format!("{}", error);
+            let display_str = format!("{error}");
             assert!(!display_str.is_empty());
         }
     }
@@ -190,7 +180,7 @@ mod tests {
     #[test]
     fn test_invalid_vault_path_error() {
         let error = Error::InvalidVaultPath("/absolute/path".to_string());
-        let display_str = format!("{}", error);
+        let display_str = format!("{error}");
         assert!(display_str.contains("Invalid vault path"));
         assert!(display_str.contains("absolute"));
         assert!(display_str.contains("relative to the vault root"));
@@ -216,7 +206,7 @@ mod tests {
             match our_error {
                 Error::Http(_) => {
                     // Test display
-                    let display_str = format!("{}", our_error);
+                    let display_str = format!("{our_error}");
                     assert!(display_str.contains("HTTP error:"));
 
                     // Test conversion to rmcp::Error

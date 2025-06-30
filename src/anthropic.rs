@@ -80,8 +80,7 @@ impl Client {
 
             // Remove the oldest non-system message (index 0 is usually the first user message)
             println!(
-                "Max tokens reached. Removing oldest message and retrying. Attempt {} of {}",
-                max_tokens_retry_count, max_tokens_max_retries
+                "Max tokens reached. Removing oldest message and retrying. Attempt {max_tokens_retry_count} of {max_tokens_max_retries}"
             );
 
             // For test purposes, only remove if we still have more than 2 messages
@@ -102,7 +101,7 @@ impl Client {
 impl Client {
     fn send_event(&self, event: AppEvent) {
         if let Err(e) = self.event_sender.try_send(event) {
-            panic!("Failed to send event to UI thread: {:?}", e);
+            panic!("Failed to send event to UI thread: {e:?}");
         }
     }
 
@@ -113,8 +112,7 @@ impl Client {
     pub fn compact(&mut self, attempt: usize, max_attempts: usize) -> Result<(), Error> {
         if attempt >= max_attempts {
             self.send_event(AppEvent::AiError(format!(
-                "Max retry attempts reached ({}) after removing oldest messages",
-                attempt
+                "Max retry attempts reached ({attempt}) after removing oldest messages"
             )));
             return Ok(());
         }
@@ -144,7 +142,7 @@ impl Client {
             "messages": self.chat_history,
         });
 
-        log::debug!("AGENT REQUEST >>> {:#?}", body);
+        log::debug!("AGENT REQUEST >>> {body:#?}");
 
         let request = self
             .client
@@ -155,7 +153,7 @@ impl Client {
         let event_sender = self.event_sender.clone();
         let send_event = move |event| {
             if let Err(e) = event_sender.try_send(event) {
-                panic!("Failed to send event to UI thread: {:?}", e);
+                panic!("Failed to send event to UI thread: {e:?}");
             }
         };
 
@@ -164,7 +162,7 @@ impl Client {
             let response = match client.execute(request).await {
                 Ok(response) => response,
                 Err(e) => {
-                    log::error!("AI request failed: {:?}", e);
+                    log::error!("AI request failed: {e:?}");
                     send_event(AppEvent::AiError("failed to send AI request".into()));
                     return;
                 }
@@ -173,7 +171,7 @@ impl Client {
             let response = match response.text().await {
                 Ok(response) => response,
                 Err(e) => {
-                    log::error!("Failed to read response: {:?}", e);
+                    log::error!("Failed to read response: {e:?}");
                     send_event(AppEvent::AiError("failed to read AI response".into()));
                     return;
                 }
@@ -182,14 +180,14 @@ impl Client {
             let response = match serde_json::from_str::<ClaudeResponse>(&response) {
                 Ok(response) => response,
                 Err(e) => {
-                    log::error!("Failed to parse response: {:?}", e);
-                    log::error!("BAD RESPONSE {:?}", response);
+                    log::error!("Failed to parse response: {e:?}");
+                    log::error!("BAD RESPONSE {response:?}");
                     send_event(AppEvent::AiError("failed to parse AI response".into()));
                     return;
                 }
             };
 
-            log::debug!("AGENT RESPONSE <<< {:#?}", response);
+            log::debug!("AGENT RESPONSE <<< {response:#?}");
 
             let event = match response.stop_reason {
                 Some(StopReason::EndTurn) => {
@@ -723,7 +721,7 @@ mod tests {
         }"#;
 
         let response: ClaudeResponse =
-            serde_json::from_str(json).unwrap_or_else(|e| panic!("{:?}", e));
+            serde_json::from_str(json).unwrap_or_else(|e| panic!("{e:?}"));
 
         // Manually extract tool uses like the invoke_tool method does
         let tool_uses: Vec<_> = response
@@ -773,7 +771,7 @@ mod tests {
         }"#;
 
         let response: ClaudeResponse =
-            serde_json::from_str(json).unwrap_or_else(|e| panic!("{:?}", e));
+            serde_json::from_str(json).unwrap_or_else(|e| panic!("{e:?}"));
 
         // Manually extract tool uses like the invoke_tool method does
         let tool_uses: Vec<_> = response
@@ -821,7 +819,7 @@ mod tests {
         }"#;
 
         let response: ClaudeResponse =
-            serde_json::from_str(json).unwrap_or_else(|e| panic!("{:?}", e));
+            serde_json::from_str(json).unwrap_or_else(|e| panic!("{e:?}"));
 
         // Manually extract tool uses like the invoke_tool method does
         let tool_uses: Vec<_> = response
