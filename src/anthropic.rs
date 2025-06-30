@@ -3,7 +3,7 @@ use crate::events::AppEvent;
 
 use futures::future;
 use llm::backends::anthropic::Anthropic;
-use llm::chat::{ChatMessage, ChatProvider, ChatRole, MessageType as LlmMessageType};
+use llm::chat::{ChatMessage, ChatProvider, ChatRole, MessageType as LlmMessageType, Tool, FunctionTool};
 use rmcp::{
     RoleClient, RoleServer, Service, ServiceExt,
     model::{CallToolRequestParam, CallToolResult, RawContent},
@@ -149,6 +149,22 @@ impl Client {
             }
         }).collect();
 
+        // Convert our tools to the LLM crate's format
+        let llm_tools: Vec<Tool> = self.tools.iter().filter_map(|tool| {
+            let name = tool.get("name")?.as_str()?.to_string();
+            let description = tool.get("description")?.as_str().unwrap_or("").to_string();
+            let input_schema = tool.get("input_schema")?;
+            
+            Some(Tool {
+                tool_type: "function".to_string(),
+                function: FunctionTool {
+                    name,
+                    description,
+                    parameters: input_schema.clone(),
+                },
+            })
+        }).collect();
+
         let event_sender = self.event_sender.clone();
         let send_event = move |event| {
             if let Err(e) = event_sender.try_send(event) {
@@ -190,11 +206,20 @@ impl Client {
                 thinking_budget_tokens,
             );
 
-            let response = match llm_client.chat_with_tools(&llm_messages, None).await {
+            // Pass tools if available
+            let tools_slice = if llm_tools.is_empty() { None } else { Some(llm_tools.as_slice()) };
+            let response = match llm_client.chat_with_tools(&llm_messages, tools_slice).await {
                 Ok(response) => response,
                 Err(e) => {
                     log::error!("AI request failed: {e:?}");
-                    send_event(AppEvent::AiError("failed to send AI request".into()));
+                    
+                    // Check if this looks like a max tokens error
+                    let error_str = format!("{:?}", e);
+                    if error_str.contains("max_tokens") || error_str.contains("maximum") || error_str.contains("context") {
+                        send_event(AppEvent::AiCompact(attempt, 5));
+                    } else {
+                        send_event(AppEvent::AiError("failed to send AI request".into()));
+                    }
                     return;
                 }
             };
@@ -674,10 +699,20 @@ mod tests {
     fn test_max_tokens_retry_behavior() {
         // Create a basic client for testing
         let (tx, _rx) = async_channel::unbounded();
+        
+        // Create a test LLM client
+        let llm_client = Anthropic::new(
+            "test-key".to_string(),
+            Some("claude-3-opus-20240229".to_string()),
+            Some(1024),
+            None, None, None, Some(false), None, None, None, None, None, None,
+        );
+        
         let client = Client {
             model: "claude-3-opus-20240229".to_string(),
             endpoint: "https://api.anthropic.com/v1/messages".to_string(),
             client: reqwest::Client::new(),
+            llm_client,
             mcp_clients: vec![],
             tools: vec![],
             max_tokens: 1024,
