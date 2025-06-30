@@ -72,7 +72,7 @@ jobs:
           tar -czf dist/dmcli-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release dmcli
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: dmcli-${{ matrix.target }}
           path: dist/dmcli-${{ matrix.target }}.tar.gz
@@ -84,7 +84,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
