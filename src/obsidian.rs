@@ -751,7 +751,7 @@ impl Obsidian {
                 let file_has_matching_tag = cache_data.tags.iter().any(|file_tag| {
                     tags.iter().any(|requested_tag| {
                         file_tag.eq_ignore_ascii_case(requested_tag)
-                            || file_tag.eq_ignore_ascii_case(&format!("#{}", requested_tag))
+                            || file_tag.eq_ignore_ascii_case(&format!("#{requested_tag}"))
                     })
                 });
 
