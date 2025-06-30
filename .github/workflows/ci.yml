@@ -1,5 +1,9 @@
 name: CI
 
+# This workflow handles code quality checks including testing, formatting,
+# linting, and basic builds. The Build and Release workflow (build.yml)
+# handles release artifacts and depends on this workflow's quality checks.
+
 on:
   push:
     branches: [main, develop]
