@@ -53,13 +53,9 @@ Use this stat block format for monsters:
 ";
 
 pub struct Client {
-    pub model: String,
-    pub endpoint: String,
-    pub client: reqwest::Client,
     pub llm_client: Anthropic,
     pub mcp_clients: Vec<McpClient>,
     pub tools: Vec<serde_json::Value>,
-    pub max_tokens: i64,
     pub chat_history: Vec<Message>,
     pub event_sender: async_channel::Sender<AppEvent>,
 }
@@ -367,10 +363,8 @@ impl Client {
 pub struct ClientBuilder {
     pub api_key: Option<String>,
     pub model: String,
-    pub version: String,
-    pub endpoint: String,
-    pub mcp_clients: Vec<McpClient>,
     pub max_tokens: i64,
+    pub mcp_clients: Vec<McpClient>,
     pub event_sender: Option<async_channel::Sender<AppEvent>>,
 }
 
@@ -379,9 +373,7 @@ impl Default for ClientBuilder {
         ClientBuilder {
             api_key: None,
             model: "claude-3-5-haiku-20241022".to_owned(),
-            version: "2023-06-01".to_owned(),
             max_tokens: 8192,
-            endpoint: "https://api.anthropic.com/v1/messages".to_owned(),
             mcp_clients: Vec::default(),
             event_sender: None,
         }
@@ -444,24 +436,7 @@ impl ClientBuilder {
             None, // thinking_budget_tokens
         );
 
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            "x-api-key",
-            api_key
-                .parse()
-                .expect("api-key is an HTTP header"),
-        );
-        headers.insert(
-            "anthropic-version",
-            self.version.parse().expect("version is an HTTP header"),
-        );
-        headers.insert(
-            "content-type",
-            "application/json"
-                .parse()
-                .expect("content-type is an HTTP header"),
-        );
-
+        // Collect tools from MCP clients
         let mut tools = Vec::<serde_json::Value>::default();
         for mcp_client in &self.mcp_clients {
             let tools_response = mcp_client.list_all_tools().await?;
@@ -484,15 +459,9 @@ impl ClientBuilder {
         let client = Client {
             llm_client,
             tools,
-            model: self.model,
-            endpoint: self.endpoint,
             mcp_clients: self.mcp_clients,
-            max_tokens: self.max_tokens,
             chat_history: Vec::new(),
             event_sender: self.event_sender.expect("event_sender must be set"),
-            client: reqwest::ClientBuilder::default()
-                .default_headers(headers)
-                .build()?,
         };
 
         Ok(client)
@@ -548,15 +517,6 @@ struct ClaudeResponse {
     pub stop_reason: Option<StopReason>,
     pub stop_sequence: Option<String>,
     pub usage: Usage,
-}
-
-impl ClaudeResponse {
-    fn extract_message(&self) -> Option<String> {
-        self.content.iter().find_map(|c| match c {
-            Content::Text { text } => Some(text.to_owned()),
-            _ => None,
-        })
-    }
 }
 
 #[derive(PartialEq, Eq, Debug, serde::Deserialize, serde::Serialize)]
@@ -709,13 +669,9 @@ mod tests {
         );
         
         let client = Client {
-            model: "claude-3-opus-20240229".to_string(),
-            endpoint: "https://api.anthropic.com/v1/messages".to_string(),
-            client: reqwest::Client::new(),
             llm_client,
             mcp_clients: vec![],
             tools: vec![],
-            max_tokens: 1024,
             chat_history: Vec::new(),
             event_sender: tx,
         };
