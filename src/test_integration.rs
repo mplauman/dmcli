@@ -15,17 +15,17 @@ mod integration_tests {
         let campaign_file = vault_path.join("campaign_overview.md");
         let mut file = fs::File::create(&campaign_file).unwrap();
         writeln!(file, "# The Lost Crown Campaign").unwrap();
-        writeln!(file, "").unwrap();
+        writeln!(file).unwrap();
         writeln!(
             file,
             "This campaign follows adventurers searching for the Crown of Aldric."
         )
         .unwrap();
-        writeln!(file, "").unwrap();
+        writeln!(file).unwrap();
         writeln!(file, "## Key Locations").unwrap();
         writeln!(file, "- [[Vaelthorne City]] - The capital").unwrap();
         writeln!(file, "- [[The Whispering Woods]] - Mysterious forest").unwrap();
-        writeln!(file, "").unwrap();
+        writeln!(file).unwrap();
         writeln!(file, "## Major NPCs").unwrap();
         writeln!(file, "- [[Lord Commander Marcus]] - City guard leader").unwrap();
 
@@ -33,7 +33,7 @@ mod integration_tests {
         let npc_file = vault_path.join("Lord Commander Marcus.md");
         let mut file = fs::File::create(&npc_file).unwrap();
         writeln!(file, "# Lord Commander Marcus").unwrap();
-        writeln!(file, "").unwrap();
+        writeln!(file).unwrap();
         writeln!(
             file,
             "A trusted ally in [[campaign_overview|The Lost Crown Campaign]]."
@@ -44,7 +44,7 @@ mod integration_tests {
             "He serves as commander of the guard in [[Vaelthorne City]]."
         )
         .unwrap();
-        writeln!(file, "").unwrap();
+        writeln!(file).unwrap();
         writeln!(
             file,
             "Marcus has been investigating the Crown of Aldric mystery."
@@ -55,7 +55,7 @@ mod integration_tests {
         let rules_file = vault_path.join("Combat Rules.md");
         let mut file = fs::File::create(&rules_file).unwrap();
         writeln!(file, "# Combat Rules Reference").unwrap();
-        writeln!(file, "").unwrap();
+        writeln!(file).unwrap();
         writeln!(file, "Initiative: Roll 1d20 + Dex modifier").unwrap();
         writeln!(file, "Attack: Roll 1d20 + BAB + ability modifier").unwrap();
         writeln!(file, "Damage: Roll weapon damage + ability modifier").unwrap();

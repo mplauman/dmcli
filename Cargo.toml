@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+[[bin]]
+name = "dmcli2"
+path = "src/main.rs"
+
 [dependencies]
 async-channel = "2.3.1"
 caith = { version = "4.2.4", default-features = false }
