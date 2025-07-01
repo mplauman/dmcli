@@ -3,7 +3,9 @@ use crate::events::AppEvent;
 
 use futures::future;
 use llm::backends::anthropic::Anthropic;
-use llm::chat::{ChatMessage, ChatProvider, ChatRole, MessageType as LlmMessageType, Tool, FunctionTool};
+use llm::chat::{
+    ChatMessage, ChatProvider, ChatRole, FunctionTool, MessageType as LlmMessageType, Tool,
+};
 use rmcp::{
     RoleClient, RoleServer, Service, ServiceExt,
     model::{CallToolRequestParam, CallToolResult, RawContent},
@@ -134,32 +136,40 @@ impl Client {
 
     fn request(&self, attempt: usize) -> Result<(), Error> {
         // Convert our internal message format to the llm crate's format
-        let llm_messages: Vec<ChatMessage> = self.chat_history.iter().map(|msg| {
-            ChatMessage {
-                role: match msg.role {
-                    Role::User => ChatRole::User,
-                    Role::Assistant => ChatRole::Assistant,
-                },
-                message_type: LlmMessageType::Text,  // Simplified for now
-                content: msg.extract_text().unwrap_or_default(),
-            }
-        }).collect();
+        let llm_messages: Vec<ChatMessage> = self
+            .chat_history
+            .iter()
+            .map(|msg| {
+                ChatMessage {
+                    role: match msg.role {
+                        Role::User => ChatRole::User,
+                        Role::Assistant => ChatRole::Assistant,
+                    },
+                    message_type: LlmMessageType::Text, // Simplified for now
+                    content: msg.extract_text().unwrap_or_default(),
+                }
+            })
+            .collect();
 
         // Convert our tools to the LLM crate's format
-        let llm_tools: Vec<Tool> = self.tools.iter().filter_map(|tool| {
-            let name = tool.get("name")?.as_str()?.to_string();
-            let description = tool.get("description")?.as_str().unwrap_or("").to_string();
-            let input_schema = tool.get("input_schema")?;
-            
-            Some(Tool {
-                tool_type: "function".to_string(),
-                function: FunctionTool {
-                    name,
-                    description,
-                    parameters: input_schema.clone(),
-                },
+        let llm_tools: Vec<Tool> = self
+            .tools
+            .iter()
+            .filter_map(|tool| {
+                let name = tool.get("name")?.as_str()?.to_string();
+                let description = tool.get("description")?.as_str().unwrap_or("").to_string();
+                let input_schema = tool.get("input_schema")?;
+
+                Some(Tool {
+                    tool_type: "function".to_string(),
+                    function: FunctionTool {
+                        name,
+                        description,
+                        parameters: input_schema.clone(),
+                    },
+                })
             })
-        }).collect();
+            .collect();
 
         let event_sender = self.event_sender.clone();
         let send_event = move |event| {
@@ -203,15 +213,22 @@ impl Client {
             );
 
             // Pass tools if available
-            let tools_slice = if llm_tools.is_empty() { None } else { Some(llm_tools.as_slice()) };
+            let tools_slice = if llm_tools.is_empty() {
+                None
+            } else {
+                Some(llm_tools.as_slice())
+            };
             let response = match llm_client.chat_with_tools(&llm_messages, tools_slice).await {
                 Ok(response) => response,
                 Err(e) => {
                     log::error!("AI request failed: {e:?}");
-                    
+
                     // Check if this looks like a max tokens error
                     let error_str = format!("{:?}", e);
-                    if error_str.contains("max_tokens") || error_str.contains("maximum") || error_str.contains("context") {
+                    if error_str.contains("max_tokens")
+                        || error_str.contains("maximum")
+                        || error_str.contains("context")
+                    {
                         send_event(AppEvent::AiCompact(attempt, 5));
                     } else {
                         send_event(AppEvent::AiError("failed to send AI request".into()));
@@ -223,12 +240,17 @@ impl Client {
             // Check if there are tool calls in the response
             if let Some(tool_calls) = response.tool_calls() {
                 let message = response.text().unwrap_or_default();
-                let tools: Vec<(String, String, serde_json::Value)> = tool_calls.iter().map(|tc| {
-                    let params: serde_json::Value = serde_json::from_str(&tc.function.arguments)
-                        .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()));
-                    (tc.id.clone(), tc.function.name.clone(), params)
-                }).collect();
-                
+                let tools: Vec<(String, String, serde_json::Value)> = tool_calls
+                    .iter()
+                    .map(|tc| {
+                        let params: serde_json::Value =
+                            serde_json::from_str(&tc.function.arguments).unwrap_or_else(|_| {
+                                serde_json::Value::Object(serde_json::Map::new())
+                            });
+                        (tc.id.clone(), tc.function.name.clone(), params)
+                    })
+                    .collect();
+
                 send_event(AppEvent::AiThinking(message, tools));
             } else {
                 let message = response.text().unwrap_or_default();
@@ -418,7 +440,7 @@ impl ClientBuilder {
 
     pub async fn build(self) -> Result<Client, Error> {
         let api_key = self.api_key.expect("api-key is set");
-        
+
         // Create the llm Anthropic client
         let llm_client = Anthropic::new(
             api_key.clone(),
@@ -428,12 +450,12 @@ impl ClientBuilder {
             None, // timeout - use default
             Some(SYSTEM_PROMPT.to_string()),
             Some(false), // stream - not using streaming for now
-            None, // top_p
-            None, // top_k
-            None, // tools - will be handled separately
-            None, // tool_choice
-            None, // reasoning
-            None, // thinking_budget_tokens
+            None,        // top_p
+            None,        // top_k
+            None,        // tools - will be handled separately
+            None,        // tool_choice
+            None,        // reasoning
+            None,        // thinking_budget_tokens
         );
 
         // Collect tools from MCP clients
@@ -483,13 +505,15 @@ impl Message {
     }
 
     pub fn extract_text(&self) -> Option<String> {
-        let texts: Vec<String> = self.content.iter()
+        let texts: Vec<String> = self
+            .content
+            .iter()
             .filter_map(|c| match c {
                 Content::Text { text } => Some(text.clone()),
                 _ => None,
             })
             .collect();
-        
+
         if texts.is_empty() {
             None
         } else {
@@ -659,15 +683,24 @@ mod tests {
     fn test_max_tokens_retry_behavior() {
         // Create a basic client for testing
         let (tx, _rx) = async_channel::unbounded();
-        
+
         // Create a test LLM client
         let llm_client = Anthropic::new(
             "test-key".to_string(),
             Some("claude-3-opus-20240229".to_string()),
             Some(1024),
-            None, None, None, Some(false), None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            Some(false),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
-        
+
         let client = Client {
             llm_client,
             mcp_clients: vec![],
