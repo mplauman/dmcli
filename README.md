@@ -13,6 +13,7 @@
 ## Features
 
 - Written in Rust for high performance and reliability
+- **Cross-platform support** - Available for Linux, macOS, and Windows
 - **Integrated dice roller** using the [caith](https://crates.io/crates/caith) library for comprehensive dice notation support
 - **LLM integration** for natural language searches through Obsidian vaults
 - **Obsidian vault integration** for searching and accessing campaign notes
@@ -20,6 +21,14 @@
 - Configurable settings via TOML configuration file
 
 ## Getting Started
+
+### Supported Platforms
+
+`dmcli` supports the following platforms:
+
+- **Linux** (x86_64) - Tested on Ubuntu, Debian, CentOS, and other distributions
+- **macOS** (Intel x86_64 and Apple Silicon ARM64) - macOS 10.15 and later
+- **Windows** (x86_64) - Windows 10 and later
 
 ### Prerequisites
 
@@ -30,15 +39,34 @@
 
 #### Option 1: Install from Release
 
-1. Download the latest release from the [Releases page](../../releases)
+1. Download the latest release for your platform from the [Releases page](../../releases):
+   - **Linux**: `dmcli-x86_64-unknown-linux-gnu.tar.gz`
+   - **macOS (Intel)**: `dmcli-x86_64-apple-darwin.tar.gz`
+   - **macOS (Apple Silicon)**: `dmcli-aarch64-apple-darwin.tar.gz`
+   - **Windows**: `dmcli-x86_64-pc-windows-msvc.zip`
+
 2. Extract the archive:
+   
+   **Linux/macOS:**
    ```bash
-   tar -xzf dmcli2-x86_64-unknown-linux-gnu.tar.gz
+   tar -xzf dmcli-<your-platform>.tar.gz
    ```
+   
+   **Windows:**
+   Extract the zip file using Windows Explorer or PowerShell:
+   ```powershell
+   Expand-Archive -Path dmcli-x86_64-pc-windows-msvc.zip -DestinationPath .
+   ```
+
 3. Move the binary to your PATH:
+   
+   **Linux/macOS:**
    ```bash
-   sudo mv dmcli2 /usr/local/bin/
+   sudo mv dmcli /usr/local/bin/
    ```
+   
+   **Windows:**
+   Move `dmcli.exe` to a directory in your PATH, or add the current directory to your PATH.
 
 #### Option 2: Compile from Source
 
@@ -53,13 +81,13 @@
    cargo build --release
    ```
 
-3. The binary will be available at `target/release/dmcli2`
+3. The binary will be available at `target/release/dmcli`
 
 ### Usage
 
 Run the application:
 ```bash
-dmcli2
+dmcli
 ```
 
 Use the built-in commands:
@@ -68,7 +96,12 @@ Use the built-in commands:
 
 ## Configuration
 
-`dmcli` uses a TOML configuration file located at `~/.config/dmcli.toml` (or your system's equivalent config directory).
+`dmcli` uses a TOML configuration file located at:
+
+- **Linux/macOS**: `~/.config/dmcli.toml`
+- **Windows**: `%APPDATA%\dmcli\dmcli.toml`
+
+The application automatically detects your system's standard configuration directory.
 
 ### Configuration Options
 
@@ -82,15 +115,32 @@ obsidian_vault = "/path/to/your/obsidian/vault"
 [logging]
 # Enable OpenTelemetry logging (optional)
 opentelemetry = false
+# Enable syslog logging (Unix/Linux/macOS only)
+syslog = false
 ```
+
+**Note**: The `syslog` option is only available on Unix-like systems (Linux and macOS). It will be ignored on Windows.
 
 ### Environment Variables
 
 Configuration can also be set using environment variables with the `DMCLI_` prefix:
 
+**Linux/macOS:**
 ```bash
 export DMCLI_LOCAL_OBSIDIAN_VAULT="/path/to/your/vault"
 export DMCLI_LOGGING_OPENTELEMETRY=false
+```
+
+**Windows (Command Prompt):**
+```cmd
+set DMCLI_LOCAL_OBSIDIAN_VAULT=C:\path\to\your\vault
+set DMCLI_LOGGING_OPENTELEMETRY=false
+```
+
+**Windows (PowerShell):**
+```powershell
+$env:DMCLI_LOCAL_OBSIDIAN_VAULT="C:\path\to\your\vault"
+$env:DMCLI_LOGGING_OPENTELEMETRY="false"
 ```
 
 ## Contributing

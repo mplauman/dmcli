@@ -53,6 +53,7 @@ fn init_logging(settings: &Config) -> Result<(), Error> {
         aggregate_log_builder = aggregate_log_builder.with(otel_log_appender);
     }
 
+    #[cfg(unix)]
     if let Ok(true) = settings.get_bool("logging.syslog") {
         let formatter = syslog::Formatter3164::default();
         let logger = syslog::unix(formatter)?;
