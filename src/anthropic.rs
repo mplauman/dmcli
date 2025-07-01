@@ -224,7 +224,7 @@ impl Client {
                     log::error!("AI request failed: {e:?}");
 
                     // Check if this looks like a max tokens error
-                    let error_str = format!("{:?}", e);
+                    let error_str = format!("{e:?}");
                     if error_str.contains("max_tokens")
                         || error_str.contains("maximum")
                         || error_str.contains("context")
