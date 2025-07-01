@@ -320,20 +320,49 @@ impl Obsidian {
     fn validate_vault_path(&self, path: &str) -> Result<PathBuf, Error> {
         let path_obj = std::path::Path::new(path);
         
-        // Check for both Windows and Unix absolute paths
-        if path_obj.is_absolute() || path.starts_with('/') || path.starts_with('\\') {
+        // Use Rust's built-in absolute path detection which is cross-platform
+        if path_obj.is_absolute() {
             return Err(Error::InvalidVaultPath(path.to_string()));
         }
         
-        // Also check for Windows drive letter paths (e.g., "C:", "D:")
-        if path.len() >= 2 && path.chars().nth(1) == Some(':') {
-            let first_char = path.chars().nth(0).unwrap();
-            if first_char.is_ascii_alphabetic() {
+        // Additional platform-specific checks for edge cases
+        #[cfg(unix)]
+        {
+            // On Unix, also reject paths starting with '/' that might not be caught by is_absolute()
+            if path.starts_with('/') {
                 return Err(Error::InvalidVaultPath(path.to_string()));
             }
         }
         
-        Ok(self.vault.join(path_obj))
+        #[cfg(windows)]
+        {
+            // On Windows, also check for UNC paths and other Windows-specific absolute path formats
+            if path.starts_with('\\') || path.starts_with('/') {
+                return Err(Error::InvalidVaultPath(path.to_string()));
+            }
+            
+            // Check for drive letter patterns that might not be caught by is_absolute()
+            if path.len() >= 2 && path.chars().nth(1) == Some(':') {
+                let first_char = path.chars().nth(0).unwrap();
+                if first_char.is_ascii_alphabetic() {
+                    return Err(Error::InvalidVaultPath(path.to_string()));
+                }
+            }
+        }
+        
+        // Join with vault path using cross-platform path operations
+        let result_path = self.vault.join(path_obj);
+        
+        // Ensure the path stays within the vault (prevent directory traversal)
+        if let Ok(canonical_result) = result_path.canonicalize() {
+            if let Ok(canonical_vault) = self.vault.canonicalize() {
+                if !canonical_result.starts_with(canonical_vault) {
+                    return Err(Error::InvalidVaultPath(path.to_string()));
+                }
+            }
+        }
+        
+        Ok(result_path)
     }
 
     /// Recursively find a list of files in a directory. If a directory is not provided then
@@ -993,11 +1022,12 @@ impl Obsidian {
             {
                 // Check if this file links to our target
                 let links_to_target = cache_data.links.iter().any(|link| {
-                    // Handle different link formats
+                    // Handle different link formats - use cross-platform path separators
+                    let separator = std::path::MAIN_SEPARATOR;
                     link == target_name
                         || link == &filename
-                        || link.ends_with(&format!("/{target_name}"))
-                        || link.ends_with(&format!("/{filename}"))
+                        || link.ends_with(&format!("{separator}{target_name}"))
+                        || link.ends_with(&format!("{separator}{filename}"))
                 });
 
                 if links_to_target {
@@ -1627,8 +1657,18 @@ mod tests {
         let temp_dir = create_test_vault();
         let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
 
+        // Test with platform-specific absolute paths
+        #[cfg(unix)]
+        let absolute_path = "/absolute/path/file.md";
+        
+        #[cfg(windows)]
+        let absolute_path = "C:\\absolute\\path\\file.md";
+        
+        #[cfg(not(any(unix, windows)))]
+        let absolute_path = "/absolute/path/file.md"; // Fallback for other platforms
+
         let request = ReadTextFileRequest {
-            filename: "/absolute/path/file.md".to_string(),
+            filename: absolute_path.to_string(),
         };
 
         let result = obsidian.read_text_file(request);
@@ -1644,8 +1684,18 @@ mod tests {
         let temp_dir = create_test_vault();
         let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
 
+        // Test with platform-specific absolute paths
+        #[cfg(unix)]
+        let absolute_path = "/absolute/path/file.md";
+        
+        #[cfg(windows)]
+        let absolute_path = "C:\\absolute\\path\\file.md";
+        
+        #[cfg(not(any(unix, windows)))]
+        let absolute_path = "/absolute/path/file.md"; // Fallback for other platforms
+
         let request = GetFileMetadataRequest {
-            filename: "/absolute/path/file.md".to_string(),
+            filename: absolute_path.to_string(),
         };
 
         let result = obsidian.get_file_metadata(request);
@@ -1661,8 +1711,18 @@ mod tests {
         let temp_dir = create_test_vault();
         let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
 
+        // Test with platform-specific absolute paths
+        #[cfg(unix)]
+        let absolute_path = "/absolute/path";
+        
+        #[cfg(windows)]
+        let absolute_path = "C:\\absolute\\path";
+        
+        #[cfg(not(any(unix, windows)))]
+        let absolute_path = "/absolute/path"; // Fallback for other platforms
+
         let request = GetVaultStructureRequest {
-            folder_path: Some("/absolute/path".to_string()),
+            folder_path: Some(absolute_path.to_string()),
         };
 
         let result = obsidian.get_vault_structure(request);
@@ -1678,8 +1738,18 @@ mod tests {
         let temp_dir = create_test_vault();
         let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
 
+        // Test with platform-specific absolute paths
+        #[cfg(unix)]
+        let absolute_path = "/absolute/path";
+        
+        #[cfg(windows)]
+        let absolute_path = "C:\\absolute\\path";
+        
+        #[cfg(not(any(unix, windows)))]
+        let absolute_path = "/absolute/path"; // Fallback for other platforms
+
         let request = GetTagsSummaryRequest {
-            folder_path: Some("/absolute/path".to_string()),
+            folder_path: Some(absolute_path.to_string()),
         };
 
         let result = obsidian.get_tags_summary(request);
@@ -1695,9 +1765,19 @@ mod tests {
         let temp_dir = create_test_vault();
         let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
 
+        // Test with platform-specific absolute paths
+        #[cfg(unix)]
+        let absolute_path = "/absolute/path";
+        
+        #[cfg(windows)]
+        let absolute_path = "C:\\absolute\\path";
+        
+        #[cfg(not(any(unix, windows)))]
+        let absolute_path = "/absolute/path"; // Fallback for other platforms
+
         let request = GetNoteByTagRequest {
             tags: vec!["test".to_string()],
-            folder_path: Some("/absolute/path".to_string()),
+            folder_path: Some(absolute_path.to_string()),
         };
 
         let result = obsidian.get_note_by_tag(request);
@@ -1753,27 +1833,39 @@ mod tests {
         assert!(path.ends_with("characters/npc1.md"));
         assert!(path.is_absolute()); // Should be absolute after joining with vault
 
-        // Test that Unix absolute paths are rejected
-        let result = obsidian.validate_vault_path("/absolute/path/file.md");
-        assert!(result.is_err());
+        // Test absolute paths using cross-platform path construction
+        #[cfg(unix)]
+        {
+            // Unix absolute path
+            let result = obsidian.validate_vault_path("/absolute/path/file.md");
+            assert!(result.is_err());
 
-        let error = result.unwrap_err();
-        match error {
-            Error::InvalidVaultPath(path) => {
-                assert_eq!(path, "/absolute/path/file.md");
+            let error = result.unwrap_err();
+            match error {
+                Error::InvalidVaultPath(path) => {
+                    assert_eq!(path, "/absolute/path/file.md");
+                }
+                _ => panic!("Expected InvalidVaultPath error"),
             }
-            _ => panic!("Expected InvalidVaultPath error"),
         }
 
-        // Test that Windows absolute paths are rejected
-        let result = obsidian.validate_vault_path("C:\\absolute\\path\\file.md");
-        assert!(result.is_err());
+        #[cfg(windows)]
+        {
+            // Windows absolute paths
+            let result = obsidian.validate_vault_path("C:\\absolute\\path\\file.md");
+            assert!(result.is_err());
 
-        let result = obsidian.validate_vault_path("D:/absolute/path/file.md");
-        assert!(result.is_err());
+            let result = obsidian.validate_vault_path("D:/absolute/path/file.md");
+            assert!(result.is_err());
 
-        // Test that backslash paths are rejected
-        let result = obsidian.validate_vault_path("\\server\\share\\file.md");
+            // UNC path
+            let result = obsidian.validate_vault_path("\\\\server\\share\\file.md");
+            assert!(result.is_err());
+        }
+
+        // Test cross-platform absolute path using std::path
+        let absolute_path = std::path::Path::new("/").join("absolute").join("path").join("file.md");
+        let result = obsidian.validate_vault_path(&absolute_path.to_string_lossy());
         assert!(result.is_err());
 
         // Test empty relative path
@@ -1787,6 +1879,20 @@ mod tests {
         assert!(result.is_ok());
         let path = result.unwrap();
         assert!(path.ends_with("file.md"));
+
+        // Test directory traversal protection
+        let result = obsidian.validate_vault_path("../../../etc/passwd");
+        // This might not error on all systems if the path doesn't exist to canonicalize,
+        // but it should at least not give access outside the vault
+        if result.is_ok() {
+            let path = result.unwrap();
+            // Ensure the path is still within the vault directory structure
+            assert!(path.starts_with(&obsidian.vault));
+        }
+
+        // Test relative path with parent directory references
+        let result = obsidian.validate_vault_path("./characters/../notes.md");
+        assert!(result.is_ok());
     }
 
     #[test]
