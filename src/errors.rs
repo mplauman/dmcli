@@ -69,6 +69,7 @@ impl From<opentelemetry_otlp::ExporterBuildError> for Error {
     }
 }
 
+#[cfg(unix)]
 impl From<syslog::Error> for Error {
     fn from(error: syslog::Error) -> Self {
         panic!("Don't know how to handle {error:?}");

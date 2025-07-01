@@ -26,19 +26,39 @@
 - Rust 1.70+ (2024 edition)
 - Git
 
+### Supported Platforms
+
+`dmcli` supports the following platforms:
+- **Linux**: x86_64-unknown-linux-gnu
+- **macOS**: x86_64-apple-darwin (Intel), aarch64-apple-darwin (Apple Silicon)
+- **Windows**: x86_64-pc-windows-msvc
+
 ### Installation
 
 #### Option 1: Install from Release
 
-1. Download the latest release from the [Releases page](../../releases)
+1. Download the latest release for your platform from the [Releases page](../../releases)
 2. Extract the archive:
+   
+   **Linux/macOS:**
    ```bash
-   tar -xzf dmcli2-x86_64-unknown-linux-gnu.tar.gz
+   tar -xzf dmcli-<target>.tar.gz
    ```
+   
+   **Windows:**
+   ```powershell
+   Expand-Archive -Path dmcli-<target>.zip -DestinationPath .
+   ```
+
 3. Move the binary to your PATH:
+   
+   **Linux/macOS:**
    ```bash
-   sudo mv dmcli2 /usr/local/bin/
+   sudo mv dmcli /usr/local/bin/
    ```
+   
+   **Windows:**
+   Move `dmcli.exe` to a directory in your PATH or add the current directory to your PATH environment variable.
 
 #### Option 2: Compile from Source
 
@@ -53,13 +73,15 @@
    cargo build --release
    ```
 
-3. The binary will be available at `target/release/dmcli2`
+3. The binary will be available at:
+   - **Linux/macOS:** `target/release/dmcli`
+   - **Windows:** `target/release/dmcli.exe`
 
 ### Usage
 
 Run the application:
 ```bash
-dmcli2
+dmcli
 ```
 
 Use the built-in commands:
