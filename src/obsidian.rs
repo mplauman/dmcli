@@ -319,9 +319,20 @@ impl Obsidian {
     /// Validates that a path is relative to the vault root, not absolute
     fn validate_vault_path(&self, path: &str) -> Result<PathBuf, Error> {
         let path_obj = std::path::Path::new(path);
-        if path_obj.is_absolute() {
+        
+        // Check for both Windows and Unix absolute paths
+        if path_obj.is_absolute() || path.starts_with('/') || path.starts_with('\\') {
             return Err(Error::InvalidVaultPath(path.to_string()));
         }
+        
+        // Also check for Windows drive letter paths (e.g., "C:", "D:")
+        if path.len() >= 2 && path.chars().nth(1) == Some(':') {
+            let first_char = path.chars().nth(0).unwrap();
+            if first_char.is_ascii_alphabetic() {
+                return Err(Error::InvalidVaultPath(path.to_string()));
+            }
+        }
+        
         Ok(self.vault.join(path_obj))
     }
 
@@ -1742,7 +1753,7 @@ mod tests {
         assert!(path.ends_with("characters/npc1.md"));
         assert!(path.is_absolute()); // Should be absolute after joining with vault
 
-        // Test that absolute paths are rejected
+        // Test that Unix absolute paths are rejected
         let result = obsidian.validate_vault_path("/absolute/path/file.md");
         assert!(result.is_err());
 
@@ -1753,6 +1764,17 @@ mod tests {
             }
             _ => panic!("Expected InvalidVaultPath error"),
         }
+
+        // Test that Windows absolute paths are rejected
+        let result = obsidian.validate_vault_path("C:\\absolute\\path\\file.md");
+        assert!(result.is_err());
+
+        let result = obsidian.validate_vault_path("D:/absolute/path/file.md");
+        assert!(result.is_err());
+
+        // Test that backslash paths are rejected
+        let result = obsidian.validate_vault_path("\\server\\share\\file.md");
+        assert!(result.is_err());
 
         // Test empty relative path
         let result = obsidian.validate_vault_path("");
