@@ -282,7 +282,7 @@ impl Client {
                     }
                     Err(e) => {
                         log::error!("Error executing tool {name}: {e:?}");
-                        format!("Error executing tool: {}", e)
+                        format!("Error executing tool: {e}")
                     }
                 };
 
