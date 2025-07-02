@@ -319,12 +319,12 @@ impl Obsidian {
     /// Validates that a path is relative to the vault root, not absolute
     fn validate_vault_path(&self, path: &str) -> Result<PathBuf, Error> {
         let path_obj = std::path::Path::new(path);
-        
+
         // Use Rust's built-in absolute path detection which is cross-platform
         if path_obj.is_absolute() {
             return Err(Error::InvalidVaultPath(path.to_string()));
         }
-        
+
         // Additional platform-specific checks for edge cases
         #[cfg(unix)]
         {
@@ -333,14 +333,14 @@ impl Obsidian {
                 return Err(Error::InvalidVaultPath(path.to_string()));
             }
         }
-        
+
         #[cfg(windows)]
         {
             // On Windows, also check for UNC paths and other Windows-specific absolute path formats
             if path.starts_with('\\') || path.starts_with('/') {
                 return Err(Error::InvalidVaultPath(path.to_string()));
             }
-            
+
             // Check for drive letter patterns that might not be caught by is_absolute()
             if path.len() >= 2 && path.chars().nth(1) == Some(':') {
                 let first_char = path.chars().nth(0).unwrap();
@@ -349,10 +349,10 @@ impl Obsidian {
                 }
             }
         }
-        
+
         // Join with vault path using cross-platform path operations
         let result_path = self.vault.join(path_obj);
-        
+
         // Ensure the path stays within the vault (prevent directory traversal)
         if let Ok(canonical_result) = result_path.canonicalize() {
             if let Ok(canonical_vault) = self.vault.canonicalize() {
@@ -361,7 +361,7 @@ impl Obsidian {
                 }
             }
         }
-        
+
         Ok(result_path)
     }
 
@@ -1660,10 +1660,10 @@ mod tests {
         // Test with platform-specific absolute paths
         #[cfg(unix)]
         let absolute_path = "/absolute/path/file.md";
-        
+
         #[cfg(windows)]
         let absolute_path = "C:\\absolute\\path\\file.md";
-        
+
         #[cfg(not(any(unix, windows)))]
         let absolute_path = "/absolute/path/file.md"; // Fallback for other platforms
 
@@ -1687,10 +1687,10 @@ mod tests {
         // Test with platform-specific absolute paths
         #[cfg(unix)]
         let absolute_path = "/absolute/path/file.md";
-        
+
         #[cfg(windows)]
         let absolute_path = "C:\\absolute\\path\\file.md";
-        
+
         #[cfg(not(any(unix, windows)))]
         let absolute_path = "/absolute/path/file.md"; // Fallback for other platforms
 
@@ -1714,10 +1714,10 @@ mod tests {
         // Test with platform-specific absolute paths
         #[cfg(unix)]
         let absolute_path = "/absolute/path";
-        
+
         #[cfg(windows)]
         let absolute_path = "C:\\absolute\\path";
-        
+
         #[cfg(not(any(unix, windows)))]
         let absolute_path = "/absolute/path"; // Fallback for other platforms
 
@@ -1741,10 +1741,10 @@ mod tests {
         // Test with platform-specific absolute paths
         #[cfg(unix)]
         let absolute_path = "/absolute/path";
-        
+
         #[cfg(windows)]
         let absolute_path = "C:\\absolute\\path";
-        
+
         #[cfg(not(any(unix, windows)))]
         let absolute_path = "/absolute/path"; // Fallback for other platforms
 
@@ -1768,10 +1768,10 @@ mod tests {
         // Test with platform-specific absolute paths
         #[cfg(unix)]
         let absolute_path = "/absolute/path";
-        
+
         #[cfg(windows)]
         let absolute_path = "C:\\absolute\\path";
-        
+
         #[cfg(not(any(unix, windows)))]
         let absolute_path = "/absolute/path"; // Fallback for other platforms
 
@@ -1864,7 +1864,10 @@ mod tests {
         }
 
         // Test cross-platform absolute path using std::path
-        let absolute_path = std::path::Path::new("/").join("absolute").join("path").join("file.md");
+        let absolute_path = std::path::Path::new("/")
+            .join("absolute")
+            .join("path")
+            .join("file.md");
         let result = obsidian.validate_vault_path(&absolute_path.to_string_lossy());
         assert!(result.is_err());
 
