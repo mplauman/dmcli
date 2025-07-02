@@ -11,6 +11,7 @@ use rmcp::{
     model::{CallToolRequestParam, CallToolResult, RawContent},
     service::{DynService, RunningService},
 };
+use std::sync::Arc;
 
 type McpClient = RunningService<RoleClient, Box<dyn DynService<RoleClient> + 'static>>;
 
@@ -55,7 +56,7 @@ Use this stat block format for monsters:
 ";
 
 pub struct Client {
-    pub llm_client: Anthropic,
+    pub llm_client: Arc<Anthropic>,
     pub mcp_clients: Vec<McpClient>,
     pub tools: Vec<serde_json::Value>,
     pub chat_history: Vec<Message>,
@@ -178,40 +179,10 @@ impl Client {
             }
         };
 
-        // Create a new Anthropic client for this request
-        // TODO: This is not ideal, but the LLM client doesn't implement Clone
-        // We should explore if there's a better way to handle this
-        let api_key = self.llm_client.api_key.clone();
-        let model = self.llm_client.model.clone();
-        let max_tokens = self.llm_client.max_tokens;
-        let temperature = self.llm_client.temperature;
-        let timeout_seconds = self.llm_client.timeout_seconds;
-        let system = self.llm_client.system.clone();
-        let stream = self.llm_client.stream;
-        let top_p = self.llm_client.top_p;
-        let top_k = self.llm_client.top_k;
-        let tools = self.llm_client.tools.clone();
-        let tool_choice = self.llm_client.tool_choice.clone();
-        let reasoning = self.llm_client.reasoning;
-        let thinking_budget_tokens = self.llm_client.thinking_budget_tokens;
+        // Clone the Arc to share the client across the async task
+        let llm_client = Arc::clone(&self.llm_client);
 
         let _background = tokio::task::spawn(async move {
-            let llm_client = Anthropic::new(
-                api_key,
-                Some(model),
-                Some(max_tokens),
-                Some(temperature),
-                Some(timeout_seconds),
-                Some(system),
-                Some(stream),
-                top_p,
-                top_k,
-                tools,
-                tool_choice,
-                Some(reasoning),
-                thinking_budget_tokens,
-            );
-
             // Pass tools if available
             let tools_slice = if llm_tools.is_empty() {
                 None
@@ -479,7 +450,7 @@ impl ClientBuilder {
         log::info!("Added tools: {}", serde_json::to_string(&tools).unwrap());
 
         let client = Client {
-            llm_client,
+            llm_client: Arc::new(llm_client),
             tools,
             mcp_clients: self.mcp_clients,
             chat_history: Vec::new(),
@@ -702,7 +673,7 @@ mod tests {
         );
 
         let client = Client {
-            llm_client,
+            llm_client: Arc::new(llm_client),
             mcp_clients: vec![],
             tools: vec![],
             chat_history: Vec::new(),
