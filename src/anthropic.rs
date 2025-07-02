@@ -1,12 +1,17 @@
 use crate::errors::Error;
 use crate::events::AppEvent;
-
 use futures::future;
+use llm::backends::anthropic::Anthropic;
+use llm::chat::{
+    ChatMessage, ChatProvider, ChatRole, FunctionTool, MessageType as LlmMessageType, Tool,
+};
+use llm::{FunctionCall, ToolCall};
 use rmcp::{
     RoleClient, RoleServer, Service, ServiceExt,
     model::{CallToolRequestParam, CallToolResult, RawContent},
     service::{DynService, RunningService},
 };
+use std::sync::Arc;
 
 type McpClient = RunningService<RoleClient, Box<dyn DynService<RoleClient> + 'static>>;
 
@@ -51,13 +56,10 @@ Use this stat block format for monsters:
 ";
 
 pub struct Client {
-    pub model: String,
-    pub endpoint: String,
-    pub client: reqwest::Client,
+    pub llm_client: Arc<Anthropic>,
     pub mcp_clients: Vec<McpClient>,
     pub tools: Vec<serde_json::Value>,
-    pub max_tokens: i64,
-    pub chat_history: Vec<Message>,
+    pub chat_history: Vec<ChatMessage>,
     pub event_sender: async_channel::Sender<AppEvent>,
 }
 
@@ -65,7 +67,7 @@ pub struct Client {
 #[cfg(test)]
 impl Client {
     // For testing purposes - tests the message removal logic for MaxTokens error
-    pub fn test_max_tokens_handling(&self, messages: &mut Vec<Message>) -> usize {
+    pub fn test_max_tokens_handling(&self, messages: &mut Vec<ChatMessage>) -> usize {
         let mut max_tokens_retry_count = 0;
         let max_tokens_max_retries = 5;
 
@@ -129,26 +131,37 @@ impl Client {
     }
 
     pub fn push(&mut self, content: String) -> Result<(), Error> {
-        self.chat_history.push(Message::user(content));
+        self.chat_history.push(ChatMessage {
+            role: ChatRole::User,
+            message_type: LlmMessageType::Text,
+            content,
+        });
         self.request(0)
     }
 
     fn request(&self, attempt: usize) -> Result<(), Error> {
-        let body = serde_json::json!({
-            "model": self.model.as_str(),
-            "max_tokens": self.max_tokens,
-            "system": SYSTEM_PROMPT,
-            "tools": self.tools,
-            "messages": self.chat_history,
-        });
+        // Clone the chat history for the async task
+        let llm_messages = self.chat_history.clone();
 
-        log::debug!("AGENT REQUEST >>> {body:#?}");
+        // Convert our tools to the LLM crate's format
+        let llm_tools: Vec<Tool> = self
+            .tools
+            .iter()
+            .filter_map(|tool| {
+                let name = tool.get("name")?.as_str()?.to_string();
+                let description = tool.get("description")?.as_str().unwrap_or("").to_string();
+                let input_schema = tool.get("input_schema")?;
 
-        let request = self
-            .client
-            .post(self.endpoint.as_str())
-            .json(&body)
-            .build()?;
+                Some(Tool {
+                    tool_type: "function".to_string(),
+                    function: FunctionTool {
+                        name,
+                        description,
+                        parameters: input_schema.clone(),
+                    },
+                })
+            })
+            .collect();
 
         let event_sender = self.event_sender.clone();
         let send_event = move |event| {
@@ -157,71 +170,54 @@ impl Client {
             }
         };
 
-        let client = self.client.clone();
+        // Clone the Arc to share the client across the async task
+        let llm_client = Arc::clone(&self.llm_client);
+
         let _background = tokio::task::spawn(async move {
-            let response = match client.execute(request).await {
+            // Pass tools if available
+            let tools_slice = if llm_tools.is_empty() {
+                None
+            } else {
+                Some(llm_tools.as_slice())
+            };
+            let response = match llm_client.chat_with_tools(&llm_messages, tools_slice).await {
                 Ok(response) => response,
                 Err(e) => {
                     log::error!("AI request failed: {e:?}");
-                    send_event(AppEvent::AiError("failed to send AI request".into()));
+
+                    // Check if this looks like a max tokens error
+                    let error_str = format!("{e:?}");
+                    if error_str.contains("max_tokens")
+                        || error_str.contains("maximum")
+                        || error_str.contains("context")
+                    {
+                        send_event(AppEvent::AiCompact(attempt, 5));
+                    } else {
+                        send_event(AppEvent::AiError("failed to send AI request".into()));
+                    }
                     return;
                 }
             };
 
-            let response = match response.text().await {
-                Ok(response) => response,
-                Err(e) => {
-                    log::error!("Failed to read response: {e:?}");
-                    send_event(AppEvent::AiError("failed to read AI response".into()));
-                    return;
-                }
-            };
+            // Check if there are tool calls in the response
+            if let Some(tool_calls) = response.tool_calls() {
+                let message = response.text().unwrap_or_default();
+                let tools: Vec<(String, String, serde_json::Value)> = tool_calls
+                    .iter()
+                    .map(|tc| {
+                        let params: serde_json::Value =
+                            serde_json::from_str(&tc.function.arguments).unwrap_or_else(|_| {
+                                serde_json::Value::Object(serde_json::Map::new())
+                            });
+                        (tc.id.clone(), tc.function.name.clone(), params)
+                    })
+                    .collect();
 
-            let response = match serde_json::from_str::<ClaudeResponse>(&response) {
-                Ok(response) => response,
-                Err(e) => {
-                    log::error!("Failed to parse response: {e:?}");
-                    log::error!("BAD RESPONSE {response:?}");
-                    send_event(AppEvent::AiError("failed to parse AI response".into()));
-                    return;
-                }
-            };
-
-            log::debug!("AGENT RESPONSE <<< {response:#?}");
-
-            let event = match response.stop_reason {
-                Some(StopReason::EndTurn) => {
-                    let message = response
-                        .extract_message()
-                        .unwrap_or("<expected message not found>".to_owned());
-                    AppEvent::AiResponse(message)
-                }
-                Some(StopReason::ToolUse) => {
-                    let message = response
-                        .extract_message()
-                        .unwrap_or("<no tool message>".to_owned());
-
-                    let tool_uses = response
-                        .content
-                        .iter()
-                        .filter_map(|c| match c {
-                            Content::ToolUse { id, name, input } => {
-                                Some((id.to_owned(), name.to_owned(), input.clone()))
-                            }
-                            _ => None,
-                        })
-                        .collect();
-
-                    AppEvent::AiThinking(message, tool_uses)
-                }
-                Some(StopReason::StopSequence) => {
-                    AppEvent::AiError(format!("Stop sequence encountered: {response:?}"))
-                }
-                Some(StopReason::MaxTokens) => AppEvent::AiCompact(attempt, 5),
-                None => AppEvent::AiError("No stop reason provided in response".to_string()),
-            };
-
-            send_event(event);
+                send_event(AppEvent::AiThinking(message, tools));
+            } else {
+                let message = response.text().unwrap_or_default();
+                send_event(AppEvent::AiResponse(message));
+            }
         });
 
         Ok(())
@@ -246,57 +242,75 @@ impl Client {
         let tool_results = future::join_all(tool_futures).await;
 
         // Process results and prepare the messages
-        let mut assistant_content = Vec::new();
-        let mut user_content = Vec::new();
 
-        // First add all tool uses to the assistant message to match the original response order
-        for (id, name, params) in &tools {
-            assistant_content.push(Content::ToolUse {
+        // First add all tool uses to the assistant message
+        let tool_calls: Vec<ToolCall> = tools
+            .iter()
+            .map(|(id, name, params)| ToolCall {
                 id: id.clone(),
-                name: name.clone(),
-                input: params.clone(),
+                call_type: "function".to_string(),
+                function: FunctionCall {
+                    name: name.clone(),
+                    arguments: serde_json::to_string(params).unwrap_or_default(),
+                },
+            })
+            .collect();
+
+        if !tool_calls.is_empty() {
+            self.chat_history.push(ChatMessage {
+                role: ChatRole::Assistant,
+                message_type: LlmMessageType::ToolUse(tool_calls),
+                content: String::new(),
             });
         }
 
         // Then add all tool results to the user message
-        for (result, (id, name, _)) in tool_results.into_iter().zip(tools.iter()) {
-            match result {
-                Ok(contents) => {
-                    user_content.push(Content::ToolResult {
-                        tool_use_id: id.clone(),
-                        content: contents,
-                    });
-                }
-                Err(e) => {
-                    log::error!("Error executing tool {name}: {e:?}");
-                    user_content.push(Content::ToolResult {
-                        tool_use_id: id.clone(),
-                        content: vec![Content::Text {
-                            text: format!("Error executing tool: {e}"),
-                        }],
-                    });
-                }
-            }
+        let tool_result_calls: Vec<ToolCall> = tool_results
+            .into_iter()
+            .zip(tools.iter())
+            .map(|(result, (id, name, _))| {
+                let content = match result {
+                    Ok(contents) => {
+                        let content_texts: Vec<String> = contents
+                            .iter()
+                            .filter_map(|c| match c {
+                                Content::Text { text } => Some(text.clone()),
+                                _ => None,
+                            })
+                            .collect();
+                        content_texts.join("\n")
+                    }
+                    Err(e) => {
+                        log::error!("Error executing tool {name}: {e:?}");
+                        format!("Error executing tool: {e}")
+                    }
+                };
 
-            // Note: For a comprehensive test suite, we would also want to test:
-            // 1. Timeouts in parallel tool execution
-            // 2. Partial failures (some tools succeed, some fail)
-            // 3. Concurrent requests with different sets of tools
-            // 4. Various response formats from the Anthropic API
-            // 5. Error propagation from the MCP clients
+                ToolCall {
+                    id: id.clone(),
+                    call_type: "function".to_string(),
+                    function: FunctionCall {
+                        name: name.clone(),
+                        arguments: content,
+                    },
+                }
+            })
+            .collect();
+
+        if !tool_result_calls.is_empty() {
+            self.chat_history.push(ChatMessage {
+                role: ChatRole::User,
+                message_type: LlmMessageType::ToolResult(tool_result_calls),
+                content: String::new(),
+            });
         }
 
-        log::debug!("Tool responses: {user_content:#?}");
-
-        self.chat_history.push(Message {
-            role: Role::Assistant,
-            content: assistant_content,
-        });
-
-        self.chat_history.push(Message {
-            role: Role::User,
-            content: user_content,
-        });
+        // Note: For a comprehensive test suite, we would also want to test:
+        // 1. Timeouts in parallel tool execution
+        // 2. Partial failures (some tools succeed, some fail)
+        // 3. Concurrent requests with different sets of tools
+        // 4. Various response formats from the Anthropic API
+        // 5. Error propagation from the MCP clients
 
         self.request(0)
     }
@@ -351,10 +365,8 @@ impl Client {
 pub struct ClientBuilder {
     pub api_key: Option<String>,
     pub model: String,
-    pub version: String,
-    pub endpoint: String,
-    pub mcp_clients: Vec<McpClient>,
     pub max_tokens: i64,
+    pub mcp_clients: Vec<McpClient>,
     pub event_sender: Option<async_channel::Sender<AppEvent>>,
 }
 
@@ -363,9 +375,7 @@ impl Default for ClientBuilder {
         ClientBuilder {
             api_key: None,
             model: "claude-3-5-haiku-20241022".to_owned(),
-            version: "2023-06-01".to_owned(),
             max_tokens: 8192,
-            endpoint: "https://api.anthropic.com/v1/messages".to_owned(),
             mcp_clients: Vec::default(),
             event_sender: None,
         }
@@ -409,25 +419,26 @@ impl ClientBuilder {
     }
 
     pub async fn build(self) -> Result<Client, Error> {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            "x-api-key",
-            self.api_key
-                .expect("api-key is set")
-                .parse()
-                .expect("api-key is an HTTP header"),
-        );
-        headers.insert(
-            "anthropic-version",
-            self.version.parse().expect("version is an HTTP header"),
-        );
-        headers.insert(
-            "content-type",
-            "application/json"
-                .parse()
-                .expect("content-type is an HTTP header"),
+        let api_key = self.api_key.expect("api-key is set");
+
+        // Create the llm Anthropic client
+        let llm_client = Anthropic::new(
+            api_key.clone(),
+            Some(self.model.clone()),
+            Some(self.max_tokens as u32),
+            None, // temperature - use default
+            None, // timeout - use default
+            Some(SYSTEM_PROMPT.to_string()),
+            Some(false), // stream - not using streaming for now
+            None,        // top_p
+            None,        // top_k
+            None,        // tools - will be handled separately
+            None,        // tool_choice
+            None,        // reasoning
+            None,        // thinking_budget_tokens
         );
 
+        // Collect tools from MCP clients
         let mut tools = Vec::<serde_json::Value>::default();
         for mcp_client in &self.mcp_clients {
             let tools_response = mcp_client.list_all_tools().await?;
@@ -448,44 +459,15 @@ impl ClientBuilder {
         log::info!("Added tools: {}", serde_json::to_string(&tools).unwrap());
 
         let client = Client {
+            llm_client: Arc::new(llm_client),
             tools,
-            model: self.model,
-            endpoint: self.endpoint,
             mcp_clients: self.mcp_clients,
-            max_tokens: self.max_tokens,
             chat_history: Vec::new(),
             event_sender: self.event_sender.expect("event_sender must be set"),
-            client: reqwest::ClientBuilder::default()
-                .default_headers(headers)
-                .build()?,
         };
 
         Ok(client)
     }
-}
-
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-pub struct Message {
-    role: Role,
-    content: Vec<Content>,
-}
-
-impl Message {
-    pub fn user(text: String) -> Message {
-        Message {
-            role: Role::User,
-            content: vec![Content::Text { text }],
-        }
-    }
-}
-
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-enum Role {
-    #[serde(rename = "assistant")]
-    Assistant,
-
-    #[serde(rename = "user")]
-    User,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -498,15 +480,6 @@ struct ClaudeResponse {
     pub stop_reason: Option<StopReason>,
     pub stop_sequence: Option<String>,
     pub usage: Usage,
-}
-
-impl ClaudeResponse {
-    fn extract_message(&self) -> Option<String> {
-        self.content.iter().find_map(|c| match c {
-            Content::Text { text } => Some(text.to_owned()),
-            _ => None,
-        })
-    }
 }
 
 #[derive(PartialEq, Eq, Debug, serde::Deserialize, serde::Serialize)]
@@ -649,23 +622,54 @@ mod tests {
     fn test_max_tokens_retry_behavior() {
         // Create a basic client for testing
         let (tx, _rx) = async_channel::unbounded();
+
+        // Create a test LLM client
+        let llm_client = Anthropic::new(
+            "test-key".to_string(),
+            Some("claude-3-opus-20240229".to_string()),
+            Some(1024),
+            None,
+            None,
+            None,
+            Some(false),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
         let client = Client {
-            model: "claude-3-opus-20240229".to_string(),
-            endpoint: "https://api.anthropic.com/v1/messages".to_string(),
-            client: reqwest::Client::new(),
+            llm_client: Arc::new(llm_client),
             mcp_clients: vec![],
             tools: vec![],
-            max_tokens: 1024,
             chat_history: Vec::new(),
             event_sender: tx,
         };
 
         // Set up messages with a few entries to test removal
         let mut messages = vec![
-            Message::user("Initial message".to_string()),
-            Message::user("Message 2".to_string()),
-            Message::user("Message 3".to_string()),
-            Message::user("Message 4".to_string()),
+            ChatMessage {
+                role: ChatRole::User,
+                message_type: LlmMessageType::Text,
+                content: "Initial message".to_string(),
+            },
+            ChatMessage {
+                role: ChatRole::User,
+                message_type: LlmMessageType::Text,
+                content: "Message 2".to_string(),
+            },
+            ChatMessage {
+                role: ChatRole::User,
+                message_type: LlmMessageType::Text,
+                content: "Message 3".to_string(),
+            },
+            ChatMessage {
+                role: ChatRole::User,
+                message_type: LlmMessageType::Text,
+                content: "Message 4".to_string(),
+            },
         ];
 
         // Test the MaxTokens handling directly
@@ -678,11 +682,7 @@ mod tests {
         assert_eq!(messages.len(), 2);
 
         // Check if the first message contains our expected initial message
-        if let Content::Text { text } = &messages[0].content[0] {
-            assert_eq!(text, "Initial message");
-        } else {
-            panic!("Expected Text content in first message");
-        }
+        assert_eq!(messages[0].content, "Initial message");
     }
 
     #[test]
