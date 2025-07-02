@@ -53,13 +53,16 @@ fn init_logging(settings: &Config) -> Result<(), Error> {
         aggregate_log_builder = aggregate_log_builder.with(otel_log_appender);
     }
 
-    if let Ok(true) = settings.get_bool("logging.syslog") {
-        let formatter = syslog::Formatter3164::default();
-        let logger = syslog::unix(formatter)?;
+    #[cfg(unix)]
+    {
+        if let Ok(true) = settings.get_bool("logging.syslog") {
+            let formatter = syslog::Formatter3164::default();
+            let logger = syslog::unix(formatter)?;
 
-        let logger = syslog::BasicLogger::new(logger);
+            let logger = syslog::BasicLogger::new(logger);
 
-        aggregate_log_builder = aggregate_log_builder.with(logger);
+            aggregate_log_builder = aggregate_log_builder.with(logger);
+        }
     }
 
     log::set_boxed_logger(Box::new(aggregate_log_builder.build()))
