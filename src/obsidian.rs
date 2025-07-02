@@ -685,12 +685,12 @@ impl Obsidian {
                 .metadata_cache
                 .get_or_parse(&filepath, |content| self.extract_tags_from_content(content))
             {
-                // Get relative path for reporting
+                // Get relative path for reporting (normalize separators to forward slashes)
                 let rel_path = filepath
                     .strip_prefix(&self.vault)
                     .unwrap_or(&filepath)
                     .to_string_lossy()
-                    .to_string();
+                    .replace(std::path::MAIN_SEPARATOR, "/");
 
                 for tag in &cache_data.tags {
                     *tag_counts.entry(tag.clone()).or_insert(0) += 1;
@@ -705,12 +705,12 @@ impl Obsidian {
                     // Extract tags from the file content
                     let tags = self.extract_tags_from_content(&content);
 
-                    // Get relative path for reporting
+                    // Get relative path for reporting (normalize separators to forward slashes)
                     let rel_path = filepath
                         .strip_prefix(&self.vault)
                         .unwrap_or(&filepath)
                         .to_string_lossy()
-                        .to_string();
+                        .replace(std::path::MAIN_SEPARATOR, "/");
 
                     // Update tag map
                     for tag in tags {
@@ -816,12 +816,12 @@ impl Obsidian {
                         .map(|duration| duration.as_secs())
                         .unwrap_or(0);
 
-                    // Convert file path to relative path from vault root
+                    // Convert file path to relative path from vault root (normalize separators to forward slashes)
                     let relative_path = file_path
                         .strip_prefix(&self.vault)
                         .unwrap_or(&file_path)
                         .to_string_lossy()
-                        .to_string();
+                        .replace(std::path::MAIN_SEPARATOR, "/");
 
                     // Convert frontmatter to JSON value
                     let frontmatter_json = match &cache_data.frontmatter {
@@ -899,7 +899,7 @@ impl Obsidian {
                 .strip_prefix(&self.vault)
                 .unwrap_or(&file_path)
                 .to_string_lossy()
-                .to_string();
+                .replace(std::path::MAIN_SEPARATOR, "/");
 
             // Read file content to get context
             let content = match std::fs::read_to_string(&file_path) {
@@ -1012,7 +1012,7 @@ impl Obsidian {
                 .strip_prefix(&self.vault)
                 .unwrap_or(&file_path)
                 .to_string_lossy()
-                .to_string();
+                .replace(std::path::MAIN_SEPARATOR, "/");
 
             // Get cached links for this file
             if let Some(cache_data) = self
