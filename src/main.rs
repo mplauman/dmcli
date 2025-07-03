@@ -103,7 +103,13 @@ async fn create_client(
 
     if let Ok(max_tokens) = config.get_int("anthropic.max_tokens") {
         log::info!("Overriding anthropic max tokens to {max_tokens}");
-        builder = builder.with_max_tokens(max_tokens)
+        builder = builder.with_max_tokens(max_tokens);
+    }
+
+    if let Ok(window_size) = config.get_int("anthropic.window_size").map(usize::try_from) {
+        let window_size = window_size.expect("window_size must be >= 0");
+        log::info!("Overriding anthropic window size to {window_size}");
+        builder = builder.with_window_size(window_size);
     }
 
     if let Ok(obsidian_vault) = config.get_string("local.obsidian_vault") {
@@ -144,9 +150,8 @@ async fn main() -> Result<(), Error> {
                 break;
             }
             AppEvent::UserCommand(DmCommand::Reset {}) => {
-                client.clear();
                 tui.add_message(
-                    "Conversation reset".to_string(),
+                    "Conversation reset (not really)".to_string(),
                     crate::tui::MessageType::System,
                 );
             }
@@ -171,15 +176,6 @@ async fn main() -> Result<(), Error> {
             AppEvent::AiThinking(msg, tools) => {
                 tui.add_message(format!("🤔 {msg}"), crate::tui::MessageType::Thinking);
                 client.use_tools(tools).await?;
-            }
-            AppEvent::AiCompact(attempt, max_attempts) => {
-                tui.add_message(
-                    format!(
-                        "Max tokens reached. Removing oldest message and retrying. Attempt {attempt} of {max_attempts}"
-                    ),
-                    crate::tui::MessageType::System
-                );
-                client.compact(attempt, max_attempts)?;
             }
             AppEvent::AiError(msg) => {
                 tui.add_message(format!("❌ {msg}"), crate::tui::MessageType::Error)
