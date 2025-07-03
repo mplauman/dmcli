@@ -5,6 +5,7 @@ use llm::backends::anthropic::Anthropic;
 use llm::chat::{
     ChatMessage, ChatProvider, ChatRole, FunctionTool, MessageType as LlmMessageType, Tool,
 };
+use llm::memory::{ChatWithMemory, SlidingWindowMemory, TrimStrategy};
 use llm::{FunctionCall, ToolCall};
 use rmcp::{
     RoleClient, RoleServer, Service, ServiceExt,
@@ -12,6 +13,7 @@ use rmcp::{
     service::{DynService, RunningService},
 };
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 type McpClient = RunningService<RoleClient, Box<dyn DynService<RoleClient> + 'static>>;
 
@@ -56,10 +58,9 @@ Use this stat block format for monsters:
 ";
 
 pub struct Client {
-    pub llm_client: Arc<Anthropic>,
+    pub llm_client: Arc<dyn ChatProvider>,
     pub mcp_clients: Vec<McpClient>,
     pub tools: Vec<serde_json::Value>,
-    pub chat_history: Vec<ChatMessage>,
     pub event_sender: async_channel::Sender<AppEvent>,
 }
 
@@ -101,48 +102,17 @@ impl Client {
 }
 
 impl Client {
-    fn send_event(&self, event: AppEvent) {
-        if let Err(e) = self.event_sender.try_send(event) {
-            panic!("Failed to send event to UI thread: {e:?}");
-        }
-    }
-
-    pub fn clear(&mut self) {
-        self.chat_history.clear();
-    }
-
-    pub fn compact(&mut self, attempt: usize, max_attempts: usize) -> Result<(), Error> {
-        if attempt >= max_attempts {
-            self.send_event(AppEvent::AiError(format!(
-                "Max retry attempts reached ({attempt}) after removing oldest messages"
-            )));
-            return Ok(());
-        }
-
-        if self.chat_history.len() <= 2 {
-            self.send_event(AppEvent::AiError(
-                "Cannot remove any more messages without losing context".to_string(),
-            ));
-            return Ok(());
-        }
-
-        self.chat_history.remove(1);
-        self.request(attempt + 1)
-    }
-
     pub fn push(&mut self, content: String) -> Result<(), Error> {
-        self.chat_history.push(ChatMessage {
+        let messages = vec![ChatMessage {
             role: ChatRole::User,
             message_type: LlmMessageType::Text,
             content,
-        });
-        self.request(0)
+        }];
+
+        self.request(messages)
     }
 
-    fn request(&self, attempt: usize) -> Result<(), Error> {
-        // Clone the chat history for the async task
-        let llm_messages = self.chat_history.clone();
-
+    fn request(&self, messages: Vec<ChatMessage>) -> Result<(), Error> {
         // Convert our tools to the LLM crate's format
         let llm_tools: Vec<Tool> = self
             .tools
@@ -180,21 +150,11 @@ impl Client {
             } else {
                 Some(llm_tools.as_slice())
             };
-            let response = match llm_client.chat_with_tools(&llm_messages, tools_slice).await {
+            let response = match llm_client.chat_with_tools(&messages, tools_slice).await {
                 Ok(response) => response,
                 Err(e) => {
                     log::error!("AI request failed: {e:?}");
-
-                    // Check if this looks like a max tokens error
-                    let error_str = format!("{e:?}");
-                    if error_str.contains("max_tokens")
-                        || error_str.contains("maximum")
-                        || error_str.contains("context")
-                    {
-                        send_event(AppEvent::AiCompact(attempt, 5));
-                    } else {
-                        send_event(AppEvent::AiError("failed to send AI request".into()));
-                    }
+                    send_event(AppEvent::AiError("failed to send AI request".into()));
                     return;
                 }
             };
@@ -256,8 +216,10 @@ impl Client {
             })
             .collect();
 
+        let mut messages = Vec::new();
+
         if !tool_calls.is_empty() {
-            self.chat_history.push(ChatMessage {
+            messages.push(ChatMessage {
                 role: ChatRole::Assistant,
                 message_type: LlmMessageType::ToolUse(tool_calls),
                 content: String::new(),
@@ -298,7 +260,7 @@ impl Client {
             .collect();
 
         if !tool_result_calls.is_empty() {
-            self.chat_history.push(ChatMessage {
+            messages.push(ChatMessage {
                 role: ChatRole::User,
                 message_type: LlmMessageType::ToolResult(tool_result_calls),
                 content: String::new(),
@@ -312,7 +274,7 @@ impl Client {
         // 4. Various response formats from the Anthropic API
         // 5. Error propagation from the MCP clients
 
-        self.request(0)
+        self.request(messages)
     }
 
     // Helper method to execute a single tool across all MCP clients
@@ -366,6 +328,7 @@ pub struct ClientBuilder {
     pub api_key: Option<String>,
     pub model: String,
     pub max_tokens: i64,
+    pub window_size: usize,
     pub mcp_clients: Vec<McpClient>,
     pub event_sender: Option<async_channel::Sender<AppEvent>>,
 }
@@ -376,6 +339,7 @@ impl Default for ClientBuilder {
             api_key: None,
             model: "claude-3-5-haiku-20241022".to_owned(),
             max_tokens: 8192,
+            window_size: 32,
             mcp_clients: Vec::default(),
             event_sender: None,
         }
@@ -395,6 +359,25 @@ impl ClientBuilder {
 
     pub fn with_max_tokens(self, max_tokens: i64) -> Self {
         Self { max_tokens, ..self }
+    }
+
+    /// Sets the sliding window size for chat memory management.
+    ///
+    /// The window size determines how many recent messages are kept in memory
+    /// before older messages are trimmed using the configured strategy.
+    ///
+    /// # Arguments
+    /// * `window_size` - The number of messages to keep in the sliding window (default: 32)
+    ///
+    /// # Example
+    /// ```
+    /// let builder = ClientBuilder::default().with_window_size(64);
+    /// ```
+    pub fn with_window_size(self, window_size: usize) -> Self {
+        Self {
+            window_size,
+            ..self
+        }
     }
 
     pub fn with_event_sender(self, event_sender: async_channel::Sender<AppEvent>) -> Self {
@@ -438,6 +421,17 @@ impl ClientBuilder {
             None,        // thinking_budget_tokens
         );
 
+        let llm_client = ChatWithMemory::new(
+            Arc::new(llm_client),
+            Arc::new(RwLock::new(Box::new(SlidingWindowMemory::with_strategy(
+                self.window_size,
+                TrimStrategy::Summarize,
+            )))),
+            None,
+            Vec::new(),
+            None,
+        );
+
         // Collect tools from MCP clients
         let mut tools = Vec::<serde_json::Value>::default();
         for mcp_client in &self.mcp_clients {
@@ -462,7 +456,7 @@ impl ClientBuilder {
             llm_client: Arc::new(llm_client),
             tools,
             mcp_clients: self.mcp_clients,
-            chat_history: Vec::new(),
+            // chat_history: Vec::new(),
             event_sender: self.event_sender.expect("event_sender must be set"),
         };
 
@@ -644,7 +638,7 @@ mod tests {
             llm_client: Arc::new(llm_client),
             mcp_clients: vec![],
             tools: vec![],
-            chat_history: Vec::new(),
+            // chat_history: Vec::new(),
             event_sender: tx,
         };
 
@@ -1033,5 +1027,23 @@ mod tests {
             }
             _ => panic!("Expected tool result"),
         }
+    }
+
+    #[test]
+    fn test_window_size_configuration() {
+        // Test default window size
+        let builder = ClientBuilder::default();
+        assert_eq!(builder.window_size, 32);
+
+        // Test custom window size
+        let builder = ClientBuilder::default().with_window_size(64);
+        assert_eq!(builder.window_size, 64);
+
+        // Test chaining with other builder methods
+        let builder = ClientBuilder::default()
+            .with_window_size(128)
+            .with_max_tokens(4096);
+        assert_eq!(builder.window_size, 128);
+        assert_eq!(builder.max_tokens, 4096);
     }
 }
