@@ -456,7 +456,6 @@ impl ClientBuilder {
             llm_client: Arc::new(llm_client),
             tools,
             mcp_clients: self.mcp_clients,
-            // chat_history: Vec::new(),
             event_sender: self.event_sender.expect("event_sender must be set"),
         };
 
