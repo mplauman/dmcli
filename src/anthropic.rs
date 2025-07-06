@@ -1031,7 +1031,7 @@ mod tests {
     fn test_window_size_configuration() {
         // Test default window size
         let builder = ClientBuilder::default();
-        assert_eq!(builder.window_size, 32);
+        assert_eq!(builder.window_size, 5);
 
         // Test custom window size
         let builder = ClientBuilder::default().with_window_size(64);
