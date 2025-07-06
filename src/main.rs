@@ -8,6 +8,7 @@ use crate::events::AppEvent;
 use crate::input::InputHandler;
 
 mod anthropic;
+mod chat_history;
 mod commands;
 mod errors;
 mod events;

@@ -27,6 +27,7 @@
 //! - `Ctrl+U`: Clear entire line
 //! - `Ctrl+W`: Delete word backward
 
+use crate::chat_history::ChatHistory;
 use crate::commands::{DmCli, DmCommand};
 use crate::errors::Error;
 use crate::events::AppEvent;
@@ -38,13 +39,10 @@ use crossterm::{
 use futures::StreamExt;
 use shlex::split;
 
-/// Maximum number of history entries to keep
-const MAX_HISTORY: usize = 1000;
-
 /// Crossterm-based input handler for terminal interaction
 pub struct InputHandler {
     event_sender: async_channel::Sender<AppEvent>,
-    history: Vec<String>,
+    chat_history: ChatHistory,
     history_index: Option<usize>,
     current_line: String,
     cursor_position: usize,
@@ -57,9 +55,13 @@ impl InputHandler {
         // Enable raw mode for terminal input
         terminal::enable_raw_mode()?;
 
+        // Create chat history with a temporary directory
+        let temp_dir = std::env::temp_dir().join("dmcli_chat_history");
+        let chat_history = ChatHistory::new(temp_dir)?;
+
         Ok(Self {
             event_sender,
-            history: Vec::new(),
+            chat_history,
             history_index: None,
             current_line: String::new(),
             cursor_position: 0,
@@ -305,7 +307,8 @@ impl InputHandler {
     }
 
     fn navigate_history(&mut self, direction: HistoryDirection) {
-        if self.history.is_empty() {
+        let recent_messages = self.chat_history.get_recent_messages();
+        if recent_messages.is_empty() {
             return;
         }
 
@@ -314,13 +317,13 @@ impl InputHandler {
                 match self.history_index {
                     None => {
                         // First time navigating history, go to last item
-                        self.history_index = Some(self.history.len() - 1);
-                        self.current_line = self.history[self.history.len() - 1].clone();
+                        self.history_index = Some(recent_messages.len() - 1);
+                        self.current_line = recent_messages[recent_messages.len() - 1].clone();
                     }
                     Some(index) if index > 0 => {
                         // Go to previous item
                         self.history_index = Some(index - 1);
-                        self.current_line = self.history[index - 1].clone();
+                        self.current_line = recent_messages[index - 1].clone();
                     }
                     Some(_) => {
                         // Already at the beginning, do nothing
@@ -330,10 +333,10 @@ impl InputHandler {
             }
             HistoryDirection::Next => {
                 match self.history_index {
-                    Some(index) if index < self.history.len() - 1 => {
+                    Some(index) if index < recent_messages.len() - 1 => {
                         // Go to next item
                         self.history_index = Some(index + 1);
-                        self.current_line = self.history[index + 1].clone();
+                        self.current_line = recent_messages[index + 1].clone();
                     }
                     Some(_) => {
                         // At the end, clear current line
@@ -353,16 +356,9 @@ impl InputHandler {
     }
 
     fn add_to_history(&mut self, line: String) {
-        // Don't add empty lines or duplicates of the last entry
-        if line.is_empty() || self.history.last() == Some(&line) {
-            return;
-        }
-
-        self.history.push(line);
-
-        // Limit history size
-        if self.history.len() > MAX_HISTORY {
-            self.history.remove(0);
+        // Use the new ChatHistory to add the message
+        if let Err(e) = self.chat_history.add_message(line) {
+            log::warn!("Failed to add message to chat history: {}", e);
         }
     }
 
