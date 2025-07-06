@@ -637,7 +637,6 @@ mod tests {
             llm_client: Arc::new(llm_client),
             mcp_clients: vec![],
             tools: vec![],
-            // chat_history: Vec::new(),
             event_sender: tx,
         };
 
