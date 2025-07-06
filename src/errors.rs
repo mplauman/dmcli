@@ -8,6 +8,8 @@ pub enum Error {
     JsonDeserialization(usize, usize, serde_json::error::Category),
     InvalidVaultPath(String),
     Http(reqwest::Error),
+    Database(String),
+    Initialization(String),
 }
 
 impl std::fmt::Display for Error {
@@ -41,6 +43,8 @@ impl std::fmt::Display for Error {
                 "Invalid vault path '{path}': paths must be relative to the vault root, not absolute"
             ),
             Self::Http(e) => write!(f, "HTTP error: {e}"),
+            Self::Database(msg) => write!(f, "Database error: {msg}"),
+            Self::Initialization(msg) => write!(f, "Initialization error: {msg}"),
         }
     }
 }
@@ -133,6 +137,8 @@ impl From<Error> for rmcp::Error {
                 None,
             ),
             Error::Http(e) => rmcp::Error::internal_error(format!("HTTP error: {e}"), None),
+            Error::Database(msg) => rmcp::Error::internal_error(format!("Database error: {msg}"), None),
+            Error::Initialization(msg) => rmcp::Error::internal_error(format!("Initialization error: {msg}"), None),
         }
     }
 }
