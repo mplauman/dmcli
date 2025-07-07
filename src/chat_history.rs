@@ -5,6 +5,7 @@
 //! model2vec-rs with the minishlab/potion-base-8M model.
 
 use crate::errors::Error;
+use llm::chat::{ChatMessage, ChatRole, MessageType as LlmMessageType};
 use memvdb::{CacheDB, Distance, Embedding as MemvdbEmbedding};
 use model2vec_rs::model::StaticModel;
 use std::collections::HashMap;
@@ -20,11 +21,9 @@ const CHAT_COLLECTION: &str = "chat_messages";
 /// Default Model2Vec model for embeddings
 const DEFAULT_MODEL: &str = "minishlab/potion-base-8M";
 
-/// Represents a chat message with its metadata
+/// Extended metadata for chat messages stored alongside embeddings
 #[derive(Debug, Clone)]
-pub struct ChatMessage {
-    /// The actual text content of the message
-    pub content: String,
+pub struct ChatMessageMetadata {
     /// Timestamp when the message was created
     pub timestamp: u64,
     /// Unique identifier for the message
@@ -102,19 +101,40 @@ pub struct ChatHistory {
     embedder: Model2VecEmbedder,
     /// In-memory cache of recent messages for compatibility
     recent_messages: Vec<String>,
+    /// Metadata lookup for message details
+    message_metadata: HashMap<String, ChatMessageMetadata>,
 }
 
-impl ChatHistory {
-    /// Creates a new ChatHistory instance with the specified model
-    ///
-    /// # Arguments
-    /// * `_db_path` - Path where the vector database could be stored (unused in this implementation)
-    /// * `model_name` - Optional Model2Vec model name (defaults to minishlab/potion-base-8M)
-    ///
-    /// # Returns
-    /// * `Result<Self, Error>` - New ChatHistory instance or error
-    pub fn new_with_model(_db_path: PathBuf, model_name: Option<&str>) -> Result<Self, Error> {
-        let embedder = Model2VecEmbedder::new(model_name)?;
+/// Builder for creating ChatHistory instances with configurable options
+pub struct ChatHistoryBuilder {
+    db_path: Option<PathBuf>,
+    model_name: Option<String>,
+}
+
+impl ChatHistoryBuilder {
+    /// Creates a new ChatHistoryBuilder
+    pub fn new() -> Self {
+        Self {
+            db_path: None,
+            model_name: None,
+        }
+    }
+
+    /// Sets the database path (currently unused but kept for future compatibility)
+    pub fn with_db_path(mut self, path: PathBuf) -> Self {
+        self.db_path = Some(path);
+        self
+    }
+
+    /// Sets the Model2Vec model name to use for embeddings
+    pub fn with_model(mut self, model: &str) -> Self {
+        self.model_name = Some(model.to_string());
+        self
+    }
+
+    /// Builds the ChatHistory instance
+    pub fn build(self) -> Result<ChatHistory, Error> {
+        let embedder = Model2VecEmbedder::new(self.model_name.as_deref())?;
         
         // Get the first embedding to determine the dimension
         let test_embedding = embedder.embed("test");
@@ -129,14 +149,39 @@ impl ChatHistory {
         db.create_collection(CHAT_COLLECTION.to_string(), embedding_dim, Distance::Cosine)
             .map_err(|_| Error::Initialization("Failed to create chat collection".to_string()))?;
 
-        Ok(Self {
+        Ok(ChatHistory {
             db,
             embedder,
             recent_messages: Vec::new(),
+            message_metadata: HashMap::new(),
         })
     }
+}
 
-    /// Creates a new ChatHistory instance with the default model
+impl Default for ChatHistoryBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ChatHistory {
+    /// Creates a new ChatHistory instance with the specified model using the builder pattern
+    ///
+    /// # Arguments
+    /// * `_db_path` - Path where the vector database could be stored (unused in this implementation)
+    /// * `model_name` - Optional Model2Vec model name (defaults to minishlab/potion-base-8M)
+    ///
+    /// # Returns
+    /// * `Result<Self, Error>` - New ChatHistory instance or error
+    pub fn new_with_model(_db_path: PathBuf, model_name: Option<&str>) -> Result<Self, Error> {
+        let mut builder = ChatHistoryBuilder::new().with_db_path(_db_path);
+        if let Some(model) = model_name {
+            builder = builder.with_model(model);
+        }
+        builder.build()
+    }
+
+    /// Creates a new ChatHistory instance with the default model using the builder pattern
     ///
     /// # Arguments
     /// * `db_path` - Path where the vector database could be stored (unused in this implementation)
@@ -144,19 +189,26 @@ impl ChatHistory {
     /// # Returns
     /// * `Result<Self, Error>` - New ChatHistory instance or error
     pub fn new(db_path: PathBuf) -> Result<Self, Error> {
-        Self::new_with_model(db_path, None)
+        ChatHistoryBuilder::new()
+            .with_db_path(db_path)
+            .build()
     }
 
-    /// Adds a new message to the chat history
+    /// Returns a new builder for creating ChatHistory instances
+    pub fn builder() -> ChatHistoryBuilder {
+        ChatHistoryBuilder::new()
+    }
+
+    /// Adds a new LLM ChatMessage to the chat history
     ///
     /// # Arguments
-    /// * `content` - The message content to add
+    /// * `message` - The ChatMessage to add
     ///
     /// # Returns
     /// * `Result<(), Error>` - Success or error
-    pub fn add_message(&mut self, content: String) -> Result<(), Error> {
+    pub fn add_message(&mut self, message: ChatMessage) -> Result<(), Error> {
         // Don't add empty messages or duplicates of the last entry
-        if content.is_empty() || self.recent_messages.last() == Some(&content) {
+        if message.content.is_empty() || self.recent_messages.last() == Some(&message.content) {
             return Ok(());
         }
 
@@ -168,20 +220,30 @@ impl ChatHistory {
         let id = format!("msg_{}_{}", timestamp, self.recent_messages.len());
 
         // Generate embedding
-        let embedding = self.embedder.embed(&content);
+        let embedding = self.embedder.embed(&message.content);
+
+        // Store metadata
+        let metadata = ChatMessageMetadata {
+            timestamp,
+            id: id.clone(),
+            embedding: embedding.clone(),
+        };
+        self.message_metadata.insert(id.clone(), metadata);
 
         // Create memvdb embedding
         let mut memvdb_id = HashMap::new();
         memvdb_id.insert("id".to_string(), id.clone());
 
-        let mut metadata = HashMap::new();
-        metadata.insert("content".to_string(), content.clone());
-        metadata.insert("timestamp".to_string(), timestamp.to_string());
+        let mut memvdb_metadata = HashMap::new();
+        memvdb_metadata.insert("content".to_string(), message.content.clone());
+        memvdb_metadata.insert("timestamp".to_string(), timestamp.to_string());
+        memvdb_metadata.insert("role".to_string(), format!("{:?}", message.role));
+        memvdb_metadata.insert("message_type".to_string(), format!("{:?}", message.message_type));
 
         let memvdb_embedding = MemvdbEmbedding {
             id: memvdb_id,
             vector: embedding,
-            metadata: Some(metadata),
+            metadata: Some(memvdb_metadata),
         };
 
         // Insert into memvdb
@@ -189,7 +251,7 @@ impl ChatHistory {
             .map_err(|_| Error::Database("Failed to insert message".to_string()))?;
 
         // Add to compatibility cache
-        self.recent_messages.push(content);
+        self.recent_messages.push(message.content);
 
         // Limit history size
         if self.recent_messages.len() > MAX_HISTORY {
@@ -201,6 +263,22 @@ impl ChatHistory {
         Ok(())
     }
 
+    /// Adds a simple text message as a User message to the chat history (convenience method)
+    ///
+    /// # Arguments
+    /// * `content` - The message content to add
+    ///
+    /// # Returns
+    /// * `Result<(), Error>` - Success or error
+    pub fn add_text_message(&mut self, content: String) -> Result<(), Error> {
+        let message = ChatMessage {
+            role: ChatRole::User,
+            message_type: LlmMessageType::Text,
+            content,
+        };
+        self.add_message(message)
+    }
+
     /// Searches for similar messages using vector similarity via memvdb
     ///
     /// # Arguments
@@ -208,7 +286,7 @@ impl ChatHistory {
     /// * `limit` - Maximum number of results to return
     ///
     /// # Returns
-    /// * `Result<Vec<ChatMessage>, Error>` - Similar messages or error
+    /// * `Result<Vec<ChatMessage>, Error>` - Similar LLM ChatMessages or error
     pub fn search_similar(&mut self, query: &str, limit: usize) -> Result<Vec<ChatMessage>, Error> {
         let collection = self.db.get_collection(CHAT_COLLECTION)
             .ok_or_else(|| Error::Database("Chat collection not found".to_string()))?;
@@ -223,21 +301,33 @@ impl ChatHistory {
         // Use memvdb for similarity search
         let results = collection.get_similarity(&query_embedding, limit);
 
-        // Convert memvdb results back to ChatMessage format
+        // Convert memvdb results back to LLM ChatMessage format
         let chat_messages: Vec<ChatMessage> = results
             .into_iter()
             .filter_map(|result| {
                 let embedding = result.embedding;
                 let metadata = embedding.metadata?;
                 let content = metadata.get("content")?.clone();
-                let timestamp = metadata.get("timestamp")?.parse::<u64>().ok()?;
-                let id = embedding.id.get("id")?.clone();
+                
+                // Parse role and message type from stored metadata
+                let role_str = metadata.get("role")?;
+                let role = if role_str.contains("User") {
+                    ChatRole::User
+                } else {
+                    ChatRole::Assistant
+                };
+                
+                let message_type_str = metadata.get("message_type")?;
+                let message_type = if message_type_str.contains("Text") {
+                    LlmMessageType::Text
+                } else {
+                    LlmMessageType::Text // Default fallback
+                };
 
                 Some(ChatMessage {
+                    role,
+                    message_type,
                     content,
-                    timestamp,
-                    id,
-                    embedding: embedding.vector,
                 })
             })
             .collect();
@@ -283,6 +373,7 @@ impl ChatHistory {
     /// Clears all messages from the history
     pub fn clear(&mut self) {
         self.recent_messages.clear();
+        self.message_metadata.clear();
         // Re-create the collection to clear embeddings
         let _ = self.db.delete_collection(CHAT_COLLECTION);
         
@@ -296,7 +387,7 @@ impl ChatHistory {
     /// Gets all messages with their embeddings and metadata
     ///
     /// # Returns
-    /// * `Result<Vec<ChatMessage>, Error>` - All messages or error
+    /// * `Result<Vec<ChatMessage>, Error>` - All LLM ChatMessages or error
     pub fn get_all_messages(&self) -> Result<Vec<ChatMessage>, Error> {
         let collection = self.db.get_collection(CHAT_COLLECTION)
             .ok_or_else(|| Error::Database("Chat collection not found".to_string()))?;
@@ -306,19 +397,42 @@ impl ChatHistory {
             .filter_map(|embedding| {
                 let metadata = embedding.metadata.as_ref()?;
                 let content = metadata.get("content")?.clone();
-                let timestamp = metadata.get("timestamp")?.parse::<u64>().ok()?;
-                let id = embedding.id.get("id")?.clone();
+                
+                // Parse role and message type from stored metadata
+                let role_str = metadata.get("role")?;
+                let role = if role_str.contains("User") {
+                    ChatRole::User
+                } else {
+                    ChatRole::Assistant
+                };
+                
+                let message_type_str = metadata.get("message_type")?;
+                let message_type = if message_type_str.contains("Text") {
+                    LlmMessageType::Text
+                } else {
+                    LlmMessageType::Text // Default fallback
+                };
 
                 Some(ChatMessage {
+                    role,
+                    message_type,
                     content,
-                    timestamp,
-                    id,
-                    embedding: embedding.vector.clone(),
                 })
             })
             .collect();
 
         Ok(chat_messages)
+    }
+
+    /// Gets the metadata for a message by its ID
+    ///
+    /// # Arguments
+    /// * `id` - The message ID
+    ///
+    /// # Returns
+    /// * `Option<&ChatMessageMetadata>` - Message metadata if found
+    pub fn get_message_metadata(&self, id: &str) -> Option<&ChatMessageMetadata> {
+        self.message_metadata.get(id)
     }
 }
 
@@ -365,7 +479,7 @@ mod tests {
             }
         };
         
-        let result = chat_history.add_message("Hello, world!".to_string());
+        let result = chat_history.add_text_message("Hello, world!".to_string());
         
         assert!(result.is_ok());
         assert_eq!(chat_history.len(), 1);
@@ -385,7 +499,7 @@ mod tests {
             }
         };
         
-        let result = chat_history.add_message("".to_string());
+        let result = chat_history.add_text_message("".to_string());
         assert!(result.is_ok());
         assert_eq!(chat_history.len(), 0);
         assert!(chat_history.is_empty());
@@ -401,10 +515,10 @@ mod tests {
             }
         };
         
-        let result1 = chat_history.add_message("Hello, world!".to_string());
+        let result1 = chat_history.add_text_message("Hello, world!".to_string());
         assert!(result1.is_ok());
         
-        let result2 = chat_history.add_message("Hello, world!".to_string());
+        let result2 = chat_history.add_text_message("Hello, world!".to_string());
         assert!(result2.is_ok());
         
         // Should still only have one message due to duplicate filtering
@@ -421,8 +535,8 @@ mod tests {
             }
         };
         
-        chat_history.add_message("First message".to_string()).unwrap();
-        chat_history.add_message("Second message".to_string()).unwrap();
+        chat_history.add_text_message("First message".to_string()).unwrap();
+        chat_history.add_text_message("Second message".to_string()).unwrap();
         
         assert_eq!(chat_history.get_message(0), Some(&"First message".to_string()));
         assert_eq!(chat_history.get_message(1), Some(&"Second message".to_string()));
@@ -439,9 +553,9 @@ mod tests {
             }
         };
         
-        chat_history.add_message("Hello, how are you?".to_string()).unwrap();
-        chat_history.add_message("I'm doing great, thanks!".to_string()).unwrap();
-        chat_history.add_message("What's the weather like?".to_string()).unwrap();
+        chat_history.add_text_message("Hello, how are you?".to_string()).unwrap();
+        chat_history.add_text_message("I'm doing great, thanks!".to_string()).unwrap();
+        chat_history.add_text_message("What's the weather like?".to_string()).unwrap();
         
         let results = chat_history.search_similar("hello", 5).unwrap();
         assert!(!results.is_empty());
@@ -466,10 +580,10 @@ mod tests {
         };
         
         // Add messages with similar semantic content
-        chat_history.add_message("I love programming in Rust".to_string()).unwrap();
-        chat_history.add_message("Rust is my favorite programming language".to_string()).unwrap();
-        chat_history.add_message("The weather is nice today".to_string()).unwrap();
-        chat_history.add_message("I enjoy coding and software development".to_string()).unwrap();
+        chat_history.add_text_message("I love programming in Rust".to_string()).unwrap();
+        chat_history.add_text_message("Rust is my favorite programming language".to_string()).unwrap();
+        chat_history.add_text_message("The weather is nice today".to_string()).unwrap();
+        chat_history.add_text_message("I enjoy coding and software development".to_string()).unwrap();
         
         // Search for programming-related content
         let results = chat_history.search_similar("coding software", 3).unwrap();
@@ -489,7 +603,7 @@ mod tests {
             }
         };
         
-        chat_history.add_message("Test message".to_string()).unwrap();
+        chat_history.add_text_message("Test message".to_string()).unwrap();
         assert_eq!(chat_history.len(), 1);
         
         chat_history.clear();
@@ -509,7 +623,7 @@ mod tests {
         
         // Add more than MAX_HISTORY messages (use smaller number for testing)
         for i in 0..20 {
-            chat_history.add_message(format!("Message {}", i)).unwrap();
+            chat_history.add_text_message(format!("Message {}", i)).unwrap();
         }
         
         // Should be limited to MAX_HISTORY (in this case, smaller test size)
@@ -523,17 +637,17 @@ mod tests {
 
     #[test]
     fn test_chat_message_creation() {
+        use llm::chat::{ChatMessage, ChatRole, MessageType as LlmMessageType};
+        
         let message = ChatMessage {
+            role: ChatRole::User,
+            message_type: LlmMessageType::Text,
             content: "Test content".to_string(),
-            timestamp: 123456789,
-            id: "test_id".to_string(),
-            embedding: vec![0.1, 0.2, 0.3],
         };
         
         assert_eq!(message.content, "Test content");
-        assert_eq!(message.timestamp, 123456789);
-        assert_eq!(message.id, "test_id");
-        assert_eq!(message.embedding.len(), 3);
+        assert_eq!(format!("{:?}", message.role), "User");
+        assert_eq!(format!("{:?}", message.message_type), "Text");
     }
 
     #[test]
@@ -546,17 +660,17 @@ mod tests {
             }
         };
         
-        chat_history.add_message("First".to_string()).unwrap();
-        chat_history.add_message("Second".to_string()).unwrap();
+        chat_history.add_text_message("First".to_string()).unwrap();
+        chat_history.add_text_message("Second".to_string()).unwrap();
         
         let all_messages = chat_history.get_all_messages().unwrap();
         assert_eq!(all_messages.len(), 2);
         assert_eq!(all_messages[0].content, "First");
         assert_eq!(all_messages[1].content, "Second");
         
-        // Verify embeddings are generated
-        assert!(!all_messages[0].embedding.is_empty());
-        assert!(!all_messages[1].embedding.is_empty());
+        // Verify they are LLM ChatMessages with correct roles
+        assert_eq!(format!("{:?}", all_messages[0].role), "User");
+        assert_eq!(format!("{:?}", all_messages[0].message_type), "Text");
     }
 
     #[test]
@@ -618,6 +732,73 @@ mod tests {
         
         // Programming-related texts should be more similar than weather text
         assert!(prog_similarity > weather_similarity);
+    }
+
+    #[test]
+    fn test_builder_pattern() {
+        let temp_dir = TempDir::new().unwrap();
+        
+        // Test basic builder
+        let chat_history = ChatHistory::builder()
+            .with_db_path(temp_dir.path().to_path_buf())
+            .build();
+        
+        if let Ok(mut history) = chat_history {
+            assert!(history.is_empty());
+            let _ = history.add_text_message("Test message".to_string());
+            assert_eq!(history.len(), 1);
+        }
+        
+        // Test builder with model
+        let chat_history_with_model = ChatHistory::builder()
+            .with_db_path(temp_dir.path().to_path_buf())
+            .with_model("minishlab/potion-base-2M")
+            .build();
+        
+        if let Ok(history) = chat_history_with_model {
+            assert!(history.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_llm_chat_message_integration() {
+        let mut chat_history = match create_test_chat_history() {
+            Some(history) => history,
+            None => {
+                println!("Skipping test - model download failed");
+                return;
+            }
+        };
+        
+        use llm::chat::{ChatMessage, ChatRole, MessageType as LlmMessageType};
+        
+        // Test adding LLM ChatMessage directly
+        let user_message = ChatMessage {
+            role: ChatRole::User,
+            message_type: LlmMessageType::Text,
+            content: "Hello from user".to_string(),
+        };
+        
+        let assistant_message = ChatMessage {
+            role: ChatRole::Assistant,
+            message_type: LlmMessageType::Text,
+            content: "Hello from assistant".to_string(),
+        };
+        
+        chat_history.add_message(user_message).unwrap();
+        chat_history.add_message(assistant_message).unwrap();
+        
+        assert_eq!(chat_history.len(), 2);
+        
+        // Search should work with LLM messages
+        let results = chat_history.search_similar("hello", 5).unwrap();
+        assert_eq!(results.len(), 2);
+        
+        // Verify the returned messages have correct types
+        for msg in results {
+            assert!(!msg.content.is_empty());
+            assert!(format!("{:?}", msg.role).contains("User") || format!("{:?}", msg.role).contains("Assistant"));
+        }
     }
 
     /// Helper function to calculate cosine similarity between two vectors
