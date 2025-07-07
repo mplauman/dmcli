@@ -5,8 +5,8 @@
 //! model2vec-rs with the minishlab/potion-base-8M model.
 
 use crate::errors::Error;
-use llm::chat::{ChatMessage, ChatRole, MessageType as LlmMessageType};
-use memvdb::{CacheDB, Distance, Embedding as MemvdbEmbedding};
+use llm::chat::{ChatMessage, ChatRole, MessageType};
+use memvdb::{CacheDB, Distance, Embedding};
 use model2vec_rs::model::StaticModel;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -71,10 +71,6 @@ impl Model2VecEmbedder {
         })
     }
     
-    /// Creates a new embedder with the default model
-    pub fn new_default() -> Result<Self, Error> {
-        Self::new(None)
-    }
 
     /// Generates high-quality embeddings for text using Model2Vec
     ///
@@ -101,8 +97,6 @@ pub struct ChatHistory {
     embedder: Model2VecEmbedder,
     /// In-memory cache of recent messages for compatibility
     recent_messages: Vec<String>,
-    /// Metadata lookup for message details
-    message_metadata: HashMap<String, ChatMessageMetadata>,
 }
 
 /// Builder for creating ChatHistory instances with configurable options
@@ -153,7 +147,6 @@ impl ChatHistoryBuilder {
             db,
             embedder,
             recent_messages: Vec::new(),
-            message_metadata: HashMap::new(),
         })
     }
 }
@@ -165,35 +158,6 @@ impl Default for ChatHistoryBuilder {
 }
 
 impl ChatHistory {
-    /// Creates a new ChatHistory instance with the specified model using the builder pattern
-    ///
-    /// # Arguments
-    /// * `_db_path` - Path where the vector database could be stored (unused in this implementation)
-    /// * `model_name` - Optional Model2Vec model name (defaults to minishlab/potion-base-8M)
-    ///
-    /// # Returns
-    /// * `Result<Self, Error>` - New ChatHistory instance or error
-    pub fn new_with_model(_db_path: PathBuf, model_name: Option<&str>) -> Result<Self, Error> {
-        let mut builder = ChatHistoryBuilder::new().with_db_path(_db_path);
-        if let Some(model) = model_name {
-            builder = builder.with_model(model);
-        }
-        builder.build()
-    }
-
-    /// Creates a new ChatHistory instance with the default model using the builder pattern
-    ///
-    /// # Arguments
-    /// * `db_path` - Path where the vector database could be stored (unused in this implementation)
-    ///
-    /// # Returns
-    /// * `Result<Self, Error>` - New ChatHistory instance or error
-    pub fn new(db_path: PathBuf) -> Result<Self, Error> {
-        ChatHistoryBuilder::new()
-            .with_db_path(db_path)
-            .build()
-    }
-
     /// Returns a new builder for creating ChatHistory instances
     pub fn builder() -> ChatHistoryBuilder {
         ChatHistoryBuilder::new()
@@ -240,7 +204,7 @@ impl ChatHistory {
         memvdb_metadata.insert("role".to_string(), format!("{:?}", message.role));
         memvdb_metadata.insert("message_type".to_string(), format!("{:?}", message.message_type));
 
-        let memvdb_embedding = MemvdbEmbedding {
+        let memvdb_embedding = Embedding {
             id: memvdb_id,
             vector: embedding,
             metadata: Some(memvdb_metadata),
@@ -263,21 +227,6 @@ impl ChatHistory {
         Ok(())
     }
 
-    /// Adds a simple text message as a User message to the chat history (convenience method)
-    ///
-    /// # Arguments
-    /// * `content` - The message content to add
-    ///
-    /// # Returns
-    /// * `Result<(), Error>` - Success or error
-    pub fn add_text_message(&mut self, content: String) -> Result<(), Error> {
-        let message = ChatMessage {
-            role: ChatRole::User,
-            message_type: LlmMessageType::Text,
-            content,
-        };
-        self.add_message(message)
-    }
 
     /// Searches for similar messages using vector similarity via memvdb
     ///
@@ -319,9 +268,9 @@ impl ChatHistory {
                 
                 let message_type_str = metadata.get("message_type")?;
                 let message_type = if message_type_str.contains("Text") {
-                    LlmMessageType::Text
+                    MessageType::Text
                 } else {
-                    LlmMessageType::Text // Default fallback
+                    MessageType::Text // Default fallback
                 };
 
                 Some(ChatMessage {
@@ -373,7 +322,6 @@ impl ChatHistory {
     /// Clears all messages from the history
     pub fn clear(&mut self) {
         self.recent_messages.clear();
-        self.message_metadata.clear();
         // Re-create the collection to clear embeddings
         let _ = self.db.delete_collection(CHAT_COLLECTION);
         
@@ -408,9 +356,9 @@ impl ChatHistory {
                 
                 let message_type_str = metadata.get("message_type")?;
                 let message_type = if message_type_str.contains("Text") {
-                    LlmMessageType::Text
+                    MessageType::Text
                 } else {
-                    LlmMessageType::Text // Default fallback
+                    MessageType::Text // Default fallback
                 };
 
                 Some(ChatMessage {
@@ -637,11 +585,11 @@ mod tests {
 
     #[test]
     fn test_chat_message_creation() {
-        use llm::chat::{ChatMessage, ChatRole, MessageType as LlmMessageType};
+        use llm::chat::{ChatMessage, ChatRole, MessageType};
         
         let message = ChatMessage {
             role: ChatRole::User,
-            message_type: LlmMessageType::Text,
+            message_type: MessageType::Text,
             content: "Test content".to_string(),
         };
         
@@ -770,18 +718,18 @@ mod tests {
             }
         };
         
-        use llm::chat::{ChatMessage, ChatRole, MessageType as LlmMessageType};
+        use llm::chat::{ChatMessage, ChatRole, MessageType};
         
         // Test adding LLM ChatMessage directly
         let user_message = ChatMessage {
             role: ChatRole::User,
-            message_type: LlmMessageType::Text,
+            message_type: MessageType::Text,
             content: "Hello from user".to_string(),
         };
         
         let assistant_message = ChatMessage {
             role: ChatRole::Assistant,
-            message_type: LlmMessageType::Text,
+            message_type: MessageType::Text,
             content: "Hello from assistant".to_string(),
         };
         
