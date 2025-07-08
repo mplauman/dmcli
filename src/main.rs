@@ -188,6 +188,11 @@ async fn main() -> Result<(), Error> {
             AppEvent::WindowResized { width, height } => tui.resized(width, height),
             AppEvent::ScrollBack => tui.handle_scroll_back(),
             AppEvent::ScrollForward => tui.handle_scroll_forward(),
+            AppEvent::StartSearch => tui.start_search(),
+            AppEvent::ExitSearch => tui.exit_search(),
+            AppEvent::UpdateSearchQuery(query) => tui.update_search_query(query),
+            AppEvent::NextSearchResult => tui.next_search_result(),
+            AppEvent::PrevSearchResult => tui.prev_search_result(),
         }
 
         tui.render()?

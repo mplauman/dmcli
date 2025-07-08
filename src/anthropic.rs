@@ -339,7 +339,7 @@ impl Default for ClientBuilder {
             api_key: None,
             model: "claude-3-5-haiku-20241022".to_owned(),
             max_tokens: 8192,
-            window_size: 5,
+            window_size: 32,
             mcp_clients: Vec::default(),
             event_sender: None,
         }
@@ -1031,7 +1031,7 @@ mod tests {
     fn test_window_size_configuration() {
         // Test default window size
         let builder = ClientBuilder::default();
-        assert_eq!(builder.window_size, 5);
+        assert_eq!(builder.window_size, 32);
 
         // Test custom window size
         let builder = ClientBuilder::default().with_window_size(64);
