@@ -113,6 +113,12 @@ async fn create_client(
         builder = builder.with_window_size(window_size);
     }
 
+    if let Ok(sliding_window_size) = config.get_int("anthropic.sliding_window_size").map(usize::try_from) {
+        let sliding_window_size = sliding_window_size.expect("sliding_window_size must be >= 0");
+        log::info!("Overriding anthropic sliding window size to {sliding_window_size}");
+        builder = builder.with_sliding_window_size(sliding_window_size);
+    }
+
     if let Ok(obsidian_vault) = config.get_string("local.obsidian_vault") {
         log::info!("Adding tools for obsidian vault located at {obsidian_vault}");
 
@@ -173,7 +179,13 @@ async fn main() -> Result<(), Error> {
                 log::debug!("Exit event received, exiting");
                 break;
             }
-            AppEvent::AiResponse(msg) => tui.add_message(msg, crate::tui::MessageType::Assistant),
+            AppEvent::AiResponse(msg) => {
+                tui.add_message(msg.clone(), crate::tui::MessageType::Assistant);
+                // Store the assistant response in chat history
+                if let Err(e) = client.store_assistant_response(msg) {
+                    log::error!("Failed to store assistant response in chat history: {}", e);
+                }
+            }
             AppEvent::AiThinking(msg, tools) => {
                 tui.add_message(format!("🤔 {msg}"), crate::tui::MessageType::Thinking);
                 client.use_tools(tools).await?;

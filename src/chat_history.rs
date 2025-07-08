@@ -10,7 +10,8 @@ use memvdb::{CacheDB, Distance, Embedding};
 use model2vec_rs::model::StaticModel;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 /// Maximum number of history entries to keep
 const MAX_HISTORY: usize = 1000;
@@ -30,6 +31,16 @@ pub struct ChatMessageMetadata {
     pub id: String,
     /// Model2Vec embedding vector
     pub embedding: Vec<f32>,
+}
+
+impl From<(u64, String, Vec<f32>)> for ChatMessageMetadata {
+    fn from((timestamp, id, embedding): (u64, String, Vec<f32>)) -> Self {
+        Self {
+            timestamp,
+            id,
+            embedding,
+        }
+    }
 }
 
 /// Model2Vec-based text embedder for high-quality semantic embeddings
@@ -70,6 +81,11 @@ impl Model2VecEmbedder {
             model_name,
         })
     }
+
+    /// Creates a new Model2Vec embedder with the default model
+    pub fn new_default() -> Result<Self, Error> {
+        Self::new(None)
+    }
     
 
     /// Generates high-quality embeddings for text using Model2Vec
@@ -101,7 +117,6 @@ pub struct ChatHistory {
 
 /// Builder for creating ChatHistory instances with configurable options
 pub struct ChatHistoryBuilder {
-    db_path: Option<PathBuf>,
     model_name: Option<String>,
 }
 
@@ -109,15 +124,8 @@ impl ChatHistoryBuilder {
     /// Creates a new ChatHistoryBuilder
     pub fn new() -> Self {
         Self {
-            db_path: None,
             model_name: None,
         }
-    }
-
-    /// Sets the database path (currently unused but kept for future compatibility)
-    pub fn with_db_path(mut self, path: PathBuf) -> Self {
-        self.db_path = Some(path);
-        self
     }
 
     /// Sets the Model2Vec model name to use for embeddings
@@ -163,36 +171,42 @@ impl ChatHistory {
         ChatHistoryBuilder::new()
     }
 
+    /// Creates a new ChatHistory instance with the default model
+    pub fn new(_db_path: PathBuf) -> Result<Self, Error> {
+        Self::builder().build()
+    }
+
+    /// Creates a new ChatHistory instance with a specific model
+    pub fn new_with_model(_db_path: PathBuf, model_name: Option<&str>) -> Result<Self, Error> {
+        let mut builder = Self::builder();
+        if let Some(model) = model_name {
+            builder = builder.with_model(model);
+        }
+        builder.build()
+    }
+
     /// Adds a new LLM ChatMessage to the chat history
     ///
     /// # Arguments
     /// * `message` - The ChatMessage to add
+    /// * `timestamp` - Timestamp when the message was created
     ///
     /// # Returns
     /// * `Result<(), Error>` - Success or error
-    pub fn add_message(&mut self, message: ChatMessage) -> Result<(), Error> {
+    pub fn add_message(&mut self, message: ChatMessage, timestamp: u64) -> Result<(), Error> {
         // Don't add empty messages or duplicates of the last entry
         if message.content.is_empty() || self.recent_messages.last() == Some(&message.content) {
             return Ok(());
         }
 
-        // Generate unique ID for the message
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let id = format!("msg_{}_{}", timestamp, self.recent_messages.len());
+        // Generate unique ID based on content + role hash
+        let mut hasher = DefaultHasher::new();
+        message.content.hash(&mut hasher);
+        format!("{:?}", message.role).hash(&mut hasher);
+        let id = format!("msg_{:x}", hasher.finish());
 
         // Generate embedding
         let embedding = self.embedder.embed(&message.content);
-
-        // Store metadata
-        let metadata = ChatMessageMetadata {
-            timestamp,
-            id: id.clone(),
-            embedding: embedding.clone(),
-        };
-        self.message_metadata.insert(id.clone(), metadata);
 
         // Create memvdb embedding
         let mut memvdb_id = HashMap::new();
@@ -202,7 +216,6 @@ impl ChatHistory {
         memvdb_metadata.insert("content".to_string(), message.content.clone());
         memvdb_metadata.insert("timestamp".to_string(), timestamp.to_string());
         memvdb_metadata.insert("role".to_string(), format!("{:?}", message.role));
-        memvdb_metadata.insert("message_type".to_string(), format!("{:?}", message.message_type));
 
         let memvdb_embedding = Embedding {
             id: memvdb_id,
@@ -225,6 +238,23 @@ impl ChatHistory {
         }
 
         Ok(())
+    }
+
+    /// Helper function for tests - adds a text message with current timestamp
+    /// This function is deprecated and only used for testing
+    #[deprecated(note = "Use add_message with ChatMessage and timestamp instead")]
+    pub fn add_text_message(&mut self, content: String) -> Result<(), Error> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let message = ChatMessage {
+            role: ChatRole::User,
+            message_type: MessageType::Text,
+            content,
+        };
+        self.add_message(message, timestamp)
     }
 
 
@@ -258,7 +288,7 @@ impl ChatHistory {
                 let metadata = embedding.metadata?;
                 let content = metadata.get("content")?.clone();
                 
-                // Parse role and message type from stored metadata
+                // Parse role from stored metadata
                 let role_str = metadata.get("role")?;
                 let role = if role_str.contains("User") {
                     ChatRole::User
@@ -266,16 +296,9 @@ impl ChatHistory {
                     ChatRole::Assistant
                 };
                 
-                let message_type_str = metadata.get("message_type")?;
-                let message_type = if message_type_str.contains("Text") {
-                    MessageType::Text
-                } else {
-                    MessageType::Text // Default fallback
-                };
-
                 Some(ChatMessage {
                     role,
-                    message_type,
+                    message_type: MessageType::Text,
                     content,
                 })
             })
@@ -346,7 +369,7 @@ impl ChatHistory {
                 let metadata = embedding.metadata.as_ref()?;
                 let content = metadata.get("content")?.clone();
                 
-                // Parse role and message type from stored metadata
+                // Parse role from stored metadata
                 let role_str = metadata.get("role")?;
                 let role = if role_str.contains("User") {
                     ChatRole::User
@@ -354,33 +377,15 @@ impl ChatHistory {
                     ChatRole::Assistant
                 };
                 
-                let message_type_str = metadata.get("message_type")?;
-                let message_type = if message_type_str.contains("Text") {
-                    MessageType::Text
-                } else {
-                    MessageType::Text // Default fallback
-                };
-
                 Some(ChatMessage {
                     role,
-                    message_type,
+                    message_type: MessageType::Text,
                     content,
                 })
             })
             .collect();
 
         Ok(chat_messages)
-    }
-
-    /// Gets the metadata for a message by its ID
-    ///
-    /// # Arguments
-    /// * `id` - The message ID
-    ///
-    /// # Returns
-    /// * `Option<&ChatMessageMetadata>` - Message metadata if found
-    pub fn get_message_metadata(&self, id: &str) -> Option<&ChatMessageMetadata> {
-        self.message_metadata.get(id)
     }
 }
 
@@ -684,11 +689,8 @@ mod tests {
 
     #[test]
     fn test_builder_pattern() {
-        let temp_dir = TempDir::new().unwrap();
-        
         // Test basic builder
         let chat_history = ChatHistory::builder()
-            .with_db_path(temp_dir.path().to_path_buf())
             .build();
         
         if let Ok(mut history) = chat_history {
@@ -699,7 +701,6 @@ mod tests {
         
         // Test builder with model
         let chat_history_with_model = ChatHistory::builder()
-            .with_db_path(temp_dir.path().to_path_buf())
             .with_model("minishlab/potion-base-2M")
             .build();
         
@@ -733,8 +734,8 @@ mod tests {
             content: "Hello from assistant".to_string(),
         };
         
-        chat_history.add_message(user_message).unwrap();
-        chat_history.add_message(assistant_message).unwrap();
+        chat_history.add_message(user_message, 1234567890).unwrap();
+        chat_history.add_message(assistant_message, 1234567891).unwrap();
         
         assert_eq!(chat_history.len(), 2);
         

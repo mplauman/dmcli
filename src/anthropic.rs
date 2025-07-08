@@ -1,3 +1,4 @@
+use crate::chat_history::ChatHistory;
 use crate::errors::Error;
 use crate::events::AppEvent;
 use futures::future;
@@ -62,6 +63,8 @@ pub struct Client {
     pub mcp_clients: Vec<McpClient>,
     pub tools: Vec<serde_json::Value>,
     pub event_sender: async_channel::Sender<AppEvent>,
+    pub chat_history: ChatHistory,
+    pub sliding_window_size: usize,
 }
 
 // Test helper functions
@@ -103,13 +106,145 @@ impl Client {
 
 impl Client {
     pub fn push(&mut self, content: String) -> Result<(), Error> {
-        let messages = vec![ChatMessage {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        
+        let user_message = ChatMessage {
             role: ChatRole::User,
             message_type: LlmMessageType::Text,
-            content,
-        }];
+            content: content.clone(),
+        };
 
-        self.request(messages)
+        // Store the user message in chat history
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        
+        self.chat_history.add_message(user_message.clone(), timestamp)?;
+
+        // Create request with enhanced context
+        self.request_with_context(vec![user_message])
+    }
+
+    /// Stores an assistant response in the chat history
+    pub fn store_assistant_response(&mut self, content: String) -> Result<(), Error> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        
+        let assistant_message = ChatMessage {
+            role: ChatRole::Assistant,
+            message_type: LlmMessageType::Text,
+            content,
+        };
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        
+        self.chat_history.add_message(assistant_message, timestamp)
+    }
+
+    /// Generates a summary of the chat history for context
+    pub fn generate_chat_summary(&self) -> String {
+        let all_messages = self.chat_history.get_all_messages().unwrap_or_default();
+        
+        if all_messages.is_empty() {
+            return "No previous conversation history.".to_string();
+        }
+        
+        let mut summary = String::new();
+        summary.push_str("## Conversation Summary\n\n");
+        
+        // Count messages by type
+        let user_count = all_messages.iter().filter(|m| matches!(m.role, ChatRole::User)).count();
+        let assistant_count = all_messages.iter().filter(|m| matches!(m.role, ChatRole::Assistant)).count();
+        
+        summary.push_str(&format!("Total messages: {} ({} from user, {} from assistant)\n\n", 
+                                 all_messages.len(), user_count, assistant_count));
+        
+        // Add recent key topics (simplified - in a real implementation, this could use AI summarization)
+        summary.push_str("Recent topics discussed:\n");
+        for message in all_messages.iter().rev().take(10) {
+            let content_preview = if message.content.len() > 50 {
+                format!("{}...", &message.content[..50])
+            } else {
+                message.content.clone()
+            };
+            summary.push_str(&format!("- {}: {}\n", 
+                                     if matches!(message.role, ChatRole::User) { "User" } else { "Assistant" }, 
+                                     content_preview));
+        }
+        
+        summary
+    }
+
+    /// Generates an enhanced system prompt with chat history context
+    pub fn generate_enhanced_system_prompt(&self) -> String {
+        let mut enhanced_prompt = SYSTEM_PROMPT.to_string();
+        
+        // Add chat history summary for context
+        let summary = self.generate_chat_summary();
+        enhanced_prompt.push_str("\n\n## Context from Previous Conversation\n\n");
+        enhanced_prompt.push_str(&summary);
+        
+        enhanced_prompt
+    }
+
+    /// Enhanced request method that includes chat history context
+    fn request_with_context(&mut self, new_messages: Vec<ChatMessage>) -> Result<(), Error> {
+        let mut all_messages = Vec::new();
+        
+        // Add chat history summary as context when there's enough history
+        let chat_messages = self.chat_history.get_all_messages().unwrap_or_default();
+        if chat_messages.len() > 10 { // Only add summary when there's substantial history
+            let summary = self.generate_chat_summary();
+            let context_message = ChatMessage {
+                role: ChatRole::User,
+                message_type: LlmMessageType::Text,
+                content: format!("CONTEXT: {}", summary),
+            };
+            all_messages.push(context_message);
+        }
+        
+        // Add sliding window of recent messages for context
+        let recent_messages = chat_messages
+            .into_iter()
+            .rev() // Most recent first
+            .take(self.sliding_window_size)
+            .collect::<Vec<_>>();
+        
+        // Add recent messages in chronological order (oldest first)
+        for message in recent_messages.into_iter().rev() {
+            all_messages.push(message);
+        }
+        
+        // Search for relevant context messages based on the new message content
+        if let Some(first_message) = new_messages.first() {
+            let relevant_messages = self.chat_history
+                .search_similar(&first_message.content, 3) // Get 3 most relevant messages
+                .unwrap_or_default();
+            
+            // Add relevant messages (avoiding duplicates with recent messages)
+            if !relevant_messages.is_empty() {
+                let relevant_context = ChatMessage {
+                    role: ChatRole::User,
+                    message_type: LlmMessageType::Text,
+                    content: format!("RELEVANT_CONTEXT: {}", 
+                        relevant_messages.iter()
+                            .map(|m| format!("{}: {}", 
+                                if matches!(m.role, ChatRole::User) { "User" } else { "Assistant" }, 
+                                m.content))
+                            .collect::<Vec<_>>()
+                            .join(" | ")),
+                };
+                all_messages.push(relevant_context);
+            }
+        }
+        
+        // Add the new messages
+        all_messages.extend(new_messages);
+        
+        self.request(all_messages)
     }
 
     fn request(&self, messages: Vec<ChatMessage>) -> Result<(), Error> {
@@ -331,6 +466,7 @@ pub struct ClientBuilder {
     pub window_size: usize,
     pub mcp_clients: Vec<McpClient>,
     pub event_sender: Option<async_channel::Sender<AppEvent>>,
+    pub sliding_window_size: usize,
 }
 
 impl Default for ClientBuilder {
@@ -342,6 +478,7 @@ impl Default for ClientBuilder {
             window_size: 5,
             mcp_clients: Vec::default(),
             event_sender: None,
+            sliding_window_size: 5,
         }
     }
 }
@@ -383,6 +520,25 @@ impl ClientBuilder {
     pub fn with_event_sender(self, event_sender: async_channel::Sender<AppEvent>) -> Self {
         Self {
             event_sender: Some(event_sender),
+            ..self
+        }
+    }
+
+    /// Sets the sliding window size for chat history context.
+    ///
+    /// The sliding window size determines how many recent messages are included
+    /// in every AI request for maintaining conversation context.
+    ///
+    /// # Arguments
+    /// * `sliding_window_size` - The number of recent messages to include (default: 5)
+    ///
+    /// # Example
+    /// ```
+    /// let builder = ClientBuilder::default().with_sliding_window_size(10);
+    /// ```
+    pub fn with_sliding_window_size(self, sliding_window_size: usize) -> Self {
+        Self {
+            sliding_window_size,
             ..self
         }
     }
@@ -452,11 +608,16 @@ impl ClientBuilder {
 
         log::info!("Added tools: {}", serde_json::to_string(&tools).unwrap());
 
+        // Initialize chat history
+        let chat_history = ChatHistory::builder().build()?;
+
         let client = Client {
             llm_client: Arc::new(llm_client),
             tools,
             mcp_clients: self.mcp_clients,
             event_sender: self.event_sender.expect("event_sender must be set"),
+            chat_history,
+            sliding_window_size: self.sliding_window_size,
         };
 
         Ok(client)
@@ -638,6 +799,8 @@ mod tests {
             mcp_clients: vec![],
             tools: vec![],
             event_sender: tx,
+            chat_history: ChatHistory::builder().build().expect("Failed to create chat history for test"),
+            sliding_window_size: 5,
         };
 
         // Set up messages with a few entries to test removal
