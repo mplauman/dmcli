@@ -1,5 +1,6 @@
 use anthropic::ClientBuilder;
 use config::Config;
+use llm::memory::TrimStrategy;
 
 use crate::anthropic::Client;
 use crate::commands::DmCommand;
@@ -110,6 +111,19 @@ async fn create_client(
         let window_size = window_size.expect("window_size must be >= 0");
         log::info!("Overriding anthropic window size to {window_size}");
         builder = builder.with_window_size(window_size);
+    }
+
+    if let Ok(trim_strategy_str) = config.get_string("anthropic.trim_strategy") {
+        let trim_strategy = match trim_strategy_str.to_lowercase().as_str() {
+            "summarize" => TrimStrategy::Summarize,
+            "drop" => TrimStrategy::Drop,
+            _ => {
+                log::warn!("Unknown trim strategy '{}', using default (Summarize)", trim_strategy_str);
+                TrimStrategy::Summarize
+            }
+        };
+        log::info!("Setting anthropic trim strategy to {:?}", trim_strategy);
+        builder = builder.with_trim_strategy(trim_strategy);
     }
 
     if let Ok(obsidian_vault) = config.get_string("local.obsidian_vault") {

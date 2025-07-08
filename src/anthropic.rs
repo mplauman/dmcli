@@ -329,6 +329,7 @@ pub struct ClientBuilder {
     pub model: String,
     pub max_tokens: i64,
     pub window_size: usize,
+    pub trim_strategy: TrimStrategy,
     pub mcp_clients: Vec<McpClient>,
     pub event_sender: Option<async_channel::Sender<AppEvent>>,
 }
@@ -340,6 +341,7 @@ impl Default for ClientBuilder {
             model: "claude-3-5-haiku-20241022".to_owned(),
             max_tokens: 8192,
             window_size: 32,
+            trim_strategy: TrimStrategy::Summarize,
             mcp_clients: Vec::default(),
             event_sender: None,
         }
@@ -376,6 +378,28 @@ impl ClientBuilder {
     pub fn with_window_size(self, window_size: usize) -> Self {
         Self {
             window_size,
+            ..self
+        }
+    }
+
+    /// Sets the trimming strategy for the sliding window memory management.
+    ///
+    /// The trim strategy determines how older messages are handled when the window
+    /// size is exceeded. Available strategies:
+    /// - `TrimStrategy::Summarize`: Summarizes older messages (default)
+    /// - `TrimStrategy::Drop`: Simply drops older messages
+    ///
+    /// # Arguments
+    /// * `strategy` - The trimming strategy to use
+    ///
+    /// # Example
+    /// ```
+    /// use llm::memory::TrimStrategy;
+    /// let builder = ClientBuilder::default().with_trim_strategy(TrimStrategy::Drop);
+    /// ```
+    pub fn with_trim_strategy(self, strategy: TrimStrategy) -> Self {
+        Self {
+            trim_strategy: strategy,
             ..self
         }
     }
@@ -425,7 +449,7 @@ impl ClientBuilder {
             Arc::new(llm_client),
             Arc::new(RwLock::new(Box::new(SlidingWindowMemory::with_strategy(
                 self.window_size,
-                TrimStrategy::Summarize,
+                self.trim_strategy,
             )))),
             None,
             Vec::new(),
@@ -1037,11 +1061,22 @@ mod tests {
         let builder = ClientBuilder::default().with_window_size(64);
         assert_eq!(builder.window_size, 64);
 
-        // Test chaining with other builder methods
+        // Test default trim strategy
+        let builder = ClientBuilder::default();
+        assert!(matches!(builder.trim_strategy, TrimStrategy::Summarize));
+
+        // Test custom trim strategy
+        let builder = ClientBuilder::default().with_trim_strategy(TrimStrategy::Drop);
+        assert!(matches!(builder.trim_strategy, TrimStrategy::Drop));
+
+        // Test chaining builder methods
         let builder = ClientBuilder::default()
             .with_window_size(128)
-            .with_max_tokens(4096);
+            .with_trim_strategy(TrimStrategy::Drop)
+            .with_model("claude-3-opus-20240229".to_string());
+        
         assert_eq!(builder.window_size, 128);
-        assert_eq!(builder.max_tokens, 4096);
+        assert!(matches!(builder.trim_strategy, TrimStrategy::Drop));
+        assert_eq!(builder.model, "claude-3-opus-20240229");
     }
 }

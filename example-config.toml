@@ -1,0 +1,28 @@
+# Example configuration for dmcli
+# Place this file at ~/.config/dmcli/config.toml
+
+[anthropic]
+# API key for Anthropic Claude
+api_key = "your-api-key-here"
+
+# Model to use (default: claude-3-5-haiku-20241022)
+model = "claude-3-5-haiku-20241022"
+
+# Maximum tokens for responses (default: 8192)
+max_tokens = 8192
+
+# Sliding window size for chat memory management (default: 32)
+# This determines how many recent messages are kept in memory
+# before older messages are trimmed using the configured strategy
+window_size = 32
+
+# Trim strategy for sliding window memory management (default: "summarize")
+# Available options:
+# - "summarize": Summarizes older messages when the window is full
+# - "drop": Simply drops older messages when the window is full
+trim_strategy = "summarize"
+
+[local]
+# Path to your Obsidian vault (optional)
+# Enables tools for searching and reading notes from your vault
+obsidian_vault = "/path/to/your/obsidian/vault"

@@ -15,6 +15,8 @@
 - Written in Rust for high performance and reliability
 - **Integrated dice roller** using the [caith](https://crates.io/crates/caith) library for comprehensive dice notation support
 - **LLM integration** for natural language searches through Obsidian vaults
+- **Sliding window chat memory** with configurable strategies for conversation management
+- **Conversation search functionality** with keyboard shortcuts for searching chat history
 - **Obsidian vault integration** for searching and accessing campaign notes
 - Terminal-based user interface for quick access during gameplay
 - Configurable settings via TOML configuration file
@@ -88,6 +90,14 @@ Use the built-in commands:
 - `roll 2d6` - Roll dice using standard dice notation
 - `exit` - Exit the application
 
+### Keyboard Shortcuts
+
+- **Ctrl+F** - Enter search mode to search through conversation history
+- **Ctrl+G** - Navigate to next search result
+- **Ctrl+Shift+G** - Navigate to previous search result
+- **Esc** - Exit search mode
+- **PgUp/PgDn** - Scroll through conversation history
+
 ## Configuration
 
 `dmcli` uses a TOML configuration file located at `~/.config/dmcli.toml` (or your system's equivalent config directory).
@@ -97,6 +107,27 @@ Use the built-in commands:
 Create a `dmcli.toml` file with the following structure:
 
 ```toml
+[anthropic]
+# API key for Anthropic Claude
+api_key = "your-api-key-here"
+
+# Model to use (default: claude-3-5-haiku-20241022)
+model = "claude-3-5-haiku-20241022"
+
+# Maximum tokens for responses (default: 8192)
+max_tokens = 8192
+
+# Sliding window size for chat memory management (default: 32)
+# This determines how many recent messages are kept in memory
+# before older messages are trimmed using the configured strategy
+window_size = 32
+
+# Trim strategy for sliding window memory management (default: "summarize")
+# Available options:
+# - "summarize": Summarizes older messages when the window is full
+# - "drop": Simply drops older messages when the window is full
+trim_strategy = "summarize"
+
 [local]
 # Path to your Obsidian vault for note searching
 obsidian_vault = "/path/to/your/obsidian/vault"
@@ -111,9 +142,33 @@ opentelemetry = false
 Configuration can also be set using environment variables with the `DMCLI_` prefix:
 
 ```bash
+export DMCLI_ANTHROPIC_API_KEY="your-api-key-here"
+export DMCLI_ANTHROPIC_MODEL="claude-3-5-haiku-20241022"
+export DMCLI_ANTHROPIC_MAX_TOKENS=8192
+export DMCLI_ANTHROPIC_WINDOW_SIZE=32
+export DMCLI_ANTHROPIC_TRIM_STRATEGY="summarize"
 export DMCLI_LOCAL_OBSIDIAN_VAULT="/path/to/your/vault"
 export DMCLI_LOGGING_OPENTELEMETRY=false
 ```
+
+## Chat Memory Management
+
+`dmcli` features an intelligent sliding window system for managing chat history:
+
+### Sliding Window
+- **Window Size**: Configurable number of recent messages to keep in memory (default: 32)
+- **Automatic Trimming**: Older messages are automatically managed when the window is full
+- **Context Preservation**: Important system messages and context are preserved
+
+### Trim Strategies
+- **Summarize** (default): Uses AI to summarize older messages, preserving important context while reducing memory usage
+- **Drop**: Simply removes older messages when the window is full (faster but may lose context)
+
+### Conversation Search
+- **Real-time Search**: Search through your entire conversation history with Ctrl+F
+- **Context Snippets**: Search results show relevant context around matches
+- **Navigation**: Use Ctrl+G and Ctrl+Shift+G to navigate between search results
+- **Visual Indicators**: Search mode is clearly indicated in the interface
 
 ## Contributing
 
