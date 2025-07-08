@@ -49,6 +49,8 @@ pub struct InputHandler {
     current_line: String,
     cursor_position: usize,
     event_stream: EventStream,
+    search_mode: bool,
+    search_query: String,
 }
 
 impl InputHandler {
@@ -64,6 +66,8 @@ impl InputHandler {
             current_line: String::new(),
             cursor_position: 0,
             event_stream: EventStream::new(),
+            search_mode: false,
+            search_query: String::new(),
         })
     }
 
@@ -140,10 +144,18 @@ impl InputHandler {
                 code: KeyCode::Backspace,
                 ..
             }) => {
-                if self.cursor_position > 0 {
-                    self.current_line.remove(self.cursor_position - 1);
-                    self.cursor_position -= 1;
-                    self.input_updated();
+                if self.search_mode {
+                    if self.cursor_position > 0 {
+                        self.search_query.remove(self.cursor_position - 1);
+                        self.cursor_position -= 1;
+                        self.search_updated();
+                    }
+                } else {
+                    if self.cursor_position > 0 {
+                        self.current_line.remove(self.cursor_position - 1);
+                        self.cursor_position -= 1;
+                        self.input_updated();
+                    }
                 }
             }
             // Delete: Delete character at cursor
@@ -151,9 +163,16 @@ impl InputHandler {
                 code: KeyCode::Delete,
                 ..
             }) => {
-                if self.cursor_position < self.current_line.len() {
-                    self.current_line.remove(self.cursor_position);
-                    self.input_updated();
+                if self.search_mode {
+                    if self.cursor_position < self.search_query.len() {
+                        self.search_query.remove(self.cursor_position);
+                        self.search_updated();
+                    }
+                } else {
+                    if self.cursor_position < self.current_line.len() {
+                        self.current_line.remove(self.cursor_position);
+                        self.input_updated();
+                    }
                 }
             }
             // Left arrow: Move cursor one position left
@@ -164,7 +183,11 @@ impl InputHandler {
             }) => {
                 if self.cursor_position > 0 {
                     self.cursor_position -= 1;
-                    self.input_updated();
+                    if self.search_mode {
+                        self.search_updated();
+                    } else {
+                        self.input_updated();
+                    }
                 }
             }
             // Right arrow: Move cursor one position right
@@ -173,9 +196,18 @@ impl InputHandler {
                 modifiers: KeyModifiers::NONE,
                 ..
             }) => {
-                if self.cursor_position < self.current_line.len() {
+                let max_len = if self.search_mode {
+                    self.search_query.len()
+                } else {
+                    self.current_line.len()
+                };
+                if self.cursor_position < max_len {
                     self.cursor_position += 1;
-                    self.input_updated();
+                    if self.search_mode {
+                        self.search_updated();
+                    } else {
+                        self.input_updated();
+                    }
                 }
             }
             // Ctrl+Left: Move cursor to previous word boundary
@@ -283,15 +315,52 @@ impl InputHandler {
             }) => {
                 self.send_event(AppEvent::ScrollForward);
             }
+            // Ctrl+F: Start search mode
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('f'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            }) => {
+                self.enter_search_mode();
+            }
+            // Ctrl+G: Next search result
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('g'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            }) => {
+                self.send_event(AppEvent::NextSearchResult);
+            }
+            // Ctrl+Shift+G: Previous search result
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('G'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            }) => {
+                self.send_event(AppEvent::PrevSearchResult);
+            }
+            // Escape: Exit search mode
+            Event::Key(KeyEvent {
+                code: KeyCode::Esc,
+                ..
+            }) => {
+                self.exit_search_mode();
+            }
             // Regular character input: Insert character at cursor
             Event::Key(KeyEvent {
                 code: KeyCode::Char(c),
                 modifiers: KeyModifiers::NONE | KeyModifiers::SHIFT,
                 ..
             }) => {
-                self.current_line.insert(self.cursor_position, c);
-                self.cursor_position += 1;
-                self.input_updated();
+                if self.search_mode {
+                    self.search_query.insert(self.cursor_position, c);
+                    self.cursor_position += 1;
+                    self.search_updated();
+                } else {
+                    self.current_line.insert(self.cursor_position, c);
+                    self.cursor_position += 1;
+                    self.input_updated();
+                }
             }
             // Terminal resize: Update window dimensions
             Event::Resize(width, height) => {
@@ -435,6 +504,31 @@ impl InputHandler {
         }
 
         pos
+    }
+
+    /// Enter search mode
+    fn enter_search_mode(&mut self) {
+        self.search_mode = true;
+        self.search_query.clear();
+        self.cursor_position = 0;
+        self.send_event(AppEvent::StartSearch);
+    }
+
+    /// Exit search mode
+    fn exit_search_mode(&mut self) {
+        if self.search_mode {
+            self.search_mode = false;
+            self.search_query.clear();
+            self.cursor_position = self.current_line.len();
+            self.send_event(AppEvent::ExitSearch);
+        }
+    }
+
+    /// Send search query update event
+    fn search_updated(&self) {
+        if self.search_mode {
+            self.send_event(AppEvent::UpdateSearchQuery(self.search_query.clone()));
+        }
     }
 }
 

@@ -21,5 +21,10 @@ pub enum AppEvent {
     },
     ScrollBack,
     ScrollForward,
+    StartSearch,
+    ExitSearch,
+    UpdateSearchQuery(String),
+    NextSearchResult,
+    PrevSearchResult,
     Exit,
 }

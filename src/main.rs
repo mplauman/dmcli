@@ -1,5 +1,6 @@
 use anthropic::ClientBuilder;
 use config::Config;
+use llm::memory::TrimStrategy;
 
 use crate::anthropic::Client;
 use crate::commands::DmCommand;
@@ -112,6 +113,19 @@ async fn create_client(
         builder = builder.with_window_size(window_size);
     }
 
+    if let Ok(trim_strategy_str) = config.get_string("anthropic.trim_strategy") {
+        let trim_strategy = match trim_strategy_str.to_lowercase().as_str() {
+            "summarize" => TrimStrategy::Summarize,
+            "drop" => TrimStrategy::Drop,
+            _ => {
+                log::warn!("Unknown trim strategy '{}', using default (Summarize)", trim_strategy_str);
+                TrimStrategy::Summarize
+            }
+        };
+        log::info!("Setting anthropic trim strategy to {:?}", trim_strategy);
+        builder = builder.with_trim_strategy(trim_strategy);
+    }
+
     if let Ok(obsidian_vault) = config.get_string("local.obsidian_vault") {
         log::info!("Adding tools for obsidian vault located at {obsidian_vault}");
 
@@ -188,6 +202,11 @@ async fn main() -> Result<(), Error> {
             AppEvent::WindowResized { width, height } => tui.resized(width, height),
             AppEvent::ScrollBack => tui.handle_scroll_back(),
             AppEvent::ScrollForward => tui.handle_scroll_forward(),
+            AppEvent::StartSearch => tui.start_search(),
+            AppEvent::ExitSearch => tui.exit_search(),
+            AppEvent::UpdateSearchQuery(query) => tui.update_search_query(query),
+            AppEvent::NextSearchResult => tui.next_search_result(),
+            AppEvent::PrevSearchResult => tui.prev_search_result(),
         }
 
         tui.render()?
