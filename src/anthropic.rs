@@ -5,7 +5,6 @@ use llm::backends::anthropic::Anthropic;
 use llm::chat::{
     ChatMessage, ChatProvider, ChatRole, FunctionTool, MessageType as LlmMessageType, Tool,
 };
-use llm::memory::{ChatWithMemory, SlidingWindowMemory, TrimStrategy};
 use llm::{FunctionCall, ToolCall};
 use rmcp::{
     RoleClient, RoleServer, Service, ServiceExt,
@@ -13,7 +12,6 @@ use rmcp::{
     service::{DynService, RunningService},
 };
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 type McpClient = RunningService<RoleClient, Box<dyn DynService<RoleClient> + 'static>>;
 
@@ -328,7 +326,6 @@ pub struct ClientBuilder {
     pub api_key: Option<String>,
     pub model: String,
     pub max_tokens: i64,
-    pub window_size: usize,
     pub mcp_clients: Vec<McpClient>,
     pub event_sender: Option<async_channel::Sender<AppEvent>>,
 }
@@ -339,7 +336,6 @@ impl Default for ClientBuilder {
             api_key: None,
             model: "claude-3-5-haiku-20241022".to_owned(),
             max_tokens: 8192,
-            window_size: 5,
             mcp_clients: Vec::default(),
             event_sender: None,
         }
@@ -359,25 +355,6 @@ impl ClientBuilder {
 
     pub fn with_max_tokens(self, max_tokens: i64) -> Self {
         Self { max_tokens, ..self }
-    }
-
-    /// Sets the sliding window size for chat memory management.
-    ///
-    /// The window size determines how many recent messages are kept in memory
-    /// before older messages are trimmed using the configured strategy.
-    ///
-    /// # Arguments
-    /// * `window_size` - The number of messages to keep in the sliding window (default: 32)
-    ///
-    /// # Example
-    /// ```
-    /// let builder = ClientBuilder::default().with_window_size(64);
-    /// ```
-    pub fn with_window_size(self, window_size: usize) -> Self {
-        Self {
-            window_size,
-            ..self
-        }
     }
 
     pub fn with_event_sender(self, event_sender: async_channel::Sender<AppEvent>) -> Self {
@@ -419,17 +396,6 @@ impl ClientBuilder {
             None,        // tool_choice
             None,        // reasoning
             None,        // thinking_budget_tokens
-        );
-
-        let llm_client = ChatWithMemory::new(
-            Arc::new(llm_client),
-            Arc::new(RwLock::new(Box::new(SlidingWindowMemory::with_strategy(
-                self.window_size,
-                TrimStrategy::Summarize,
-            )))),
-            None,
-            Vec::new(),
-            None,
         );
 
         // Collect tools from MCP clients
@@ -1025,23 +991,5 @@ mod tests {
             }
             _ => panic!("Expected tool result"),
         }
-    }
-
-    #[test]
-    fn test_window_size_configuration() {
-        // Test default window size
-        let builder = ClientBuilder::default();
-        assert_eq!(builder.window_size, 5);
-
-        // Test custom window size
-        let builder = ClientBuilder::default().with_window_size(64);
-        assert_eq!(builder.window_size, 64);
-
-        // Test chaining with other builder methods
-        let builder = ClientBuilder::default()
-            .with_window_size(128)
-            .with_max_tokens(4096);
-        assert_eq!(builder.window_size, 128);
-        assert_eq!(builder.max_tokens, 4096);
     }
 }

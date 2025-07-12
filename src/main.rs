@@ -106,12 +106,6 @@ async fn create_client(
         builder = builder.with_max_tokens(max_tokens);
     }
 
-    if let Ok(window_size) = config.get_int("anthropic.window_size").map(usize::try_from) {
-        let window_size = window_size.expect("window_size must be >= 0");
-        log::info!("Overriding anthropic window size to {window_size}");
-        builder = builder.with_window_size(window_size);
-    }
-
     if let Ok(obsidian_vault) = config.get_string("local.obsidian_vault") {
         log::info!("Adding tools for obsidian vault located at {obsidian_vault}");
 
