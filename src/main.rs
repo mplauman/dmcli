@@ -111,7 +111,7 @@ async fn create_client(
 
         let obsidian = crate::obsidian::Obsidian::new(obsidian_vault.into());
 
-        builder = builder.with_toolkit(obsidian).await;
+        builder = builder.with_toolkit(obsidian).await?;
     };
 
     builder.build().await

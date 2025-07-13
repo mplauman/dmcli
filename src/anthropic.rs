@@ -327,18 +327,21 @@ impl ClientBuilder {
         }
     }
 
-    pub async fn with_toolkit<T: Service<RoleServer> + Send + 'static>(self, toolkit: T) -> Self {
+    pub async fn with_toolkit<T: Service<RoleServer> + Send + 'static>(
+        self,
+        toolkit: T,
+    ) -> Result<Self, Error> {
         let server = rmcp_in_process_transport::in_process::TokioInProcess::new(toolkit);
-        let server = server.serve().await.unwrap();
-        let server = ().into_dyn().serve(server).await.unwrap();
+        let server = server.serve().await?;
+        let server = ().into_dyn().serve(server).await?;
 
         let mut mcp_clients = self.mcp_clients;
         mcp_clients.push(server);
 
-        Self {
+        Ok(Self {
             mcp_clients,
             ..self
-        }
+        })
     }
 
     pub async fn build(self) -> Result<Client, Error> {
