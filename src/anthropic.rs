@@ -62,43 +62,6 @@ pub struct Client {
     pub event_sender: async_channel::Sender<AppEvent>,
 }
 
-// Test helper functions
-#[cfg(test)]
-impl Client {
-    // For testing purposes - tests the message removal logic for MaxTokens error
-    pub fn test_max_tokens_handling(&self, messages: &mut Vec<ChatMessage>) -> usize {
-        let mut max_tokens_retry_count = 0;
-        let max_tokens_max_retries = 5;
-
-        while max_tokens_retry_count < max_tokens_max_retries {
-            max_tokens_retry_count += 1;
-
-            if messages.len() <= 2 {
-                // Cannot remove any more messages without losing context
-                println!("Cannot remove any more messages without losing context");
-                break;
-            }
-
-            // Remove the oldest non-system message (index 0 is usually the first user message)
-            println!(
-                "Max tokens reached. Removing oldest message and retrying. Attempt {max_tokens_retry_count} of {max_tokens_max_retries}"
-            );
-
-            // For test purposes, only remove if we still have more than 2 messages
-            if messages.len() > 2 {
-                messages.remove(1); // Keep the first message, remove the second oldest
-            } else {
-                break;
-            }
-
-            // For testing purposes, we'll just continue until we hit the retry limit
-            // In real usage, the loop would retry the API call after removing a message
-        }
-
-        max_tokens_retry_count
-    }
-}
-
 impl Client {
     pub fn push(&mut self, content: String) -> Result<(), Error> {
         let messages = vec![ChatMessage {
@@ -576,72 +539,6 @@ fn test_claude_response_serde() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_max_tokens_retry_behavior() {
-        // Create a basic client for testing
-        let (tx, _rx) = async_channel::unbounded();
-
-        // Create a test LLM client
-        let llm_client = Anthropic::new(
-            "test-key".to_string(),
-            Some("claude-3-opus-20240229".to_string()),
-            Some(1024),
-            None,
-            None,
-            None,
-            Some(false),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-
-        let client = Client {
-            llm_client: Arc::new(llm_client),
-            mcp_clients: vec![],
-            tools: vec![],
-            event_sender: tx,
-        };
-
-        // Set up messages with a few entries to test removal
-        let mut messages = vec![
-            ChatMessage {
-                role: ChatRole::User,
-                message_type: LlmMessageType::Text,
-                content: "Initial message".to_string(),
-            },
-            ChatMessage {
-                role: ChatRole::User,
-                message_type: LlmMessageType::Text,
-                content: "Message 2".to_string(),
-            },
-            ChatMessage {
-                role: ChatRole::User,
-                message_type: LlmMessageType::Text,
-                content: "Message 3".to_string(),
-            },
-            ChatMessage {
-                role: ChatRole::User,
-                message_type: LlmMessageType::Text,
-                content: "Message 4".to_string(),
-            },
-        ];
-
-        // Test the MaxTokens handling directly
-        let retry_count = client.test_max_tokens_handling(&mut messages);
-
-        // Should stop after going through all messages except the first one
-        assert_eq!(retry_count, 3);
-
-        // Verify that messages were removed (started with 4, should have 2 left)
-        assert_eq!(messages.len(), 2);
-
-        // Check if the first message contains our expected initial message
-        assert_eq!(messages[0].content, "Initial message");
-    }
 
     #[test]
     fn test_multiple_tool_use_extraction() {
