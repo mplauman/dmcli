@@ -56,10 +56,10 @@ Use this stat block format for monsters:
 ";
 
 pub struct Client {
-    pub llm_client: Arc<dyn ChatProvider>,
-    pub mcp_clients: Vec<McpClient>,
-    pub tools: Vec<serde_json::Value>,
-    pub event_sender: async_channel::Sender<AppEvent>,
+    llm_client: Arc<dyn ChatProvider>,
+    mcp_clients: Vec<McpClient>,
+    tools: Vec<serde_json::Value>,
+    event_sender: async_channel::Sender<AppEvent>,
 }
 
 impl Client {
@@ -286,11 +286,11 @@ impl Client {
 }
 
 pub struct ClientBuilder {
-    pub api_key: Option<String>,
-    pub model: String,
-    pub max_tokens: i64,
-    pub mcp_clients: Vec<McpClient>,
-    pub event_sender: Option<async_channel::Sender<AppEvent>>,
+    api_key: Option<String>,
+    model: String,
+    max_tokens: i64,
+    mcp_clients: Vec<McpClient>,
+    event_sender: Option<async_channel::Sender<AppEvent>>,
 }
 
 impl Default for ClientBuilder {
