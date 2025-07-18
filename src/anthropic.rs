@@ -6,14 +6,20 @@ use llm::chat::{
     ChatMessage, ChatProvider, ChatRole, FunctionTool, MessageType as LlmMessageType, Tool,
 };
 use llm::{FunctionCall, ToolCall};
+use memvdb::{CacheDB, Embedding};
+use model2vec_rs::model::StaticModel;
 use rmcp::{
     RoleClient, RoleServer, Service, ServiceExt,
     model::{CallToolRequestParam, CallToolResult, RawContent},
     service::{DynService, RunningService},
 };
+use std::collections::HashMap;
 use std::sync::Arc;
 
 type McpClient = RunningService<RoleClient, Box<dyn DynService<RoleClient> + 'static>>;
+
+// Include the generated constants from the build script
+include!(concat!(env!("OUT_DIR"), "/model_constants.rs"));
 
 static SYSTEM_PROMPT: &str = "
 You are a dungeon master's helpful assistant. You're role is to help them search through their notes to
@@ -60,6 +66,9 @@ pub struct Client {
     mcp_clients: Vec<McpClient>,
     tools: Vec<serde_json::Value>,
     event_sender: async_channel::Sender<AppEvent>,
+    cache: CacheDB,
+    embedder: StaticModel,
+    recent_messages: Vec<ChatMessage>,
 }
 
 impl Client {
@@ -73,7 +82,45 @@ impl Client {
         self.request(messages)
     }
 
-    fn request(&self, messages: Vec<ChatMessage>) -> Result<(), Error> {
+    fn request(&mut self, messages: Vec<ChatMessage>) -> Result<(), Error> {
+        let embeddings = self.embedder.encode(
+            &messages
+                .iter()
+                .map(|m| {
+                    let role = match m.role {
+                        ChatRole::User => "User",
+                        ChatRole::Assistant => "Assistant",
+                    };
+                    format!("{}: {}", role, m.content)
+                })
+                .collect::<Vec<String>>(),
+        );
+
+        let mut index = self.recent_messages.len();
+        let embeddings = messages
+            .iter()
+            .zip(embeddings)
+            .map(|(msg, vector)| {
+                let id = HashMap::from([("index".to_string(), index.to_string())]);
+                index = index.saturating_add(1);
+
+                let metadata = Some(HashMap::from([(
+                    "content".to_string(),
+                    msg.content.clone(),
+                )]));
+
+                Embedding {
+                    id,
+                    vector,
+                    metadata,
+                }
+            })
+            .collect::<Vec<Embedding>>();
+
+        self.cache.update_collection("messages", embeddings)?;
+        self.recent_messages.extend(messages);
+        let messages = self.recent_messages.clone();
+
         // Convert our tools to the LLM crate's format
         let llm_tools: Vec<Tool> = self
             .tools
@@ -291,6 +338,7 @@ pub struct ClientBuilder {
     max_tokens: i64,
     mcp_clients: Vec<McpClient>,
     event_sender: Option<async_channel::Sender<AppEvent>>,
+    embedding_model: Option<String>,
 }
 
 impl Default for ClientBuilder {
@@ -301,6 +349,7 @@ impl Default for ClientBuilder {
             max_tokens: 8192,
             mcp_clients: Vec::default(),
             event_sender: None,
+            embedding_model: None,
         }
     }
 }
@@ -323,6 +372,13 @@ impl ClientBuilder {
     pub fn with_event_sender(self, event_sender: async_channel::Sender<AppEvent>) -> Self {
         Self {
             event_sender: Some(event_sender),
+            ..self
+        }
+    }
+
+    pub fn with_embedding_model(self, embedding_model: String) -> Self {
+        Self {
+            embedding_model: Some(embedding_model),
             ..self
         }
     }
@@ -384,11 +440,46 @@ impl ClientBuilder {
 
         log::info!("Added tools: {}", serde_json::to_string(&tools).unwrap());
 
+        let embedding_model_or_path = match self.embedding_model {
+            Some(embedding_model) => embedding_model,
+            None => {
+                let folder = dirs::cache_dir().expect("cache dir exists").join("dmcli");
+
+                if !folder.exists() {
+                    std::fs::create_dir_all(&folder)?;
+                    std::fs::write(folder.join("tokenizer.json"), TOKENIZER_BYTES)?;
+                    std::fs::write(folder.join("model.safetensors"), MODEL_BYTES)?;
+                    std::fs::write(folder.join("config.json"), CONFIG_BYTES)?;
+                }
+
+                folder.to_string_lossy().into_owned()
+            }
+        };
+
+        log::info!("Loading Model2Vec model: {embedding_model_or_path}");
+        let embedder = StaticModel::from_pretrained(
+            embedding_model_or_path,
+            None, // No HuggingFace token needed for public models
+            None, // Use default normalization from model config
+            None, // No subfolder
+        )
+        .map_err(|e| Error::Embedding(format!("{e}")))?;
+
+        let mut cache = CacheDB::new();
+        cache.create_collection(
+            "messages".into(),
+            embedder.encode_single("test").len(),
+            memvdb::Distance::Cosine,
+        )?;
+
         let client = Client {
             llm_client: Arc::new(llm_client),
             tools,
             mcp_clients: self.mcp_clients,
             event_sender: self.event_sender.expect("event_sender must be set"),
+            embedder,
+            cache,
+            recent_messages: Vec::new(),
         };
 
         Ok(client)

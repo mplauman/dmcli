@@ -3,12 +3,14 @@ use config::Config;
 
 use crate::anthropic::Client;
 use crate::commands::DmCommand;
+use crate::conversation::Conversation;
 use crate::errors::Error;
 use crate::events::AppEvent;
 use crate::input::InputHandler;
 
 mod anthropic;
 mod commands;
+mod conversation;
 mod errors;
 mod events;
 mod input;
@@ -101,6 +103,11 @@ async fn create_client(
         builder = builder.with_model(model);
     }
 
+    if let Ok(embedding_model) = config.get_string("anthropic.embedding_model") {
+        log::info!("Overriding anthropic embedding model to {embedding_model}");
+        builder = builder.with_embedding_model(embedding_model);
+    }
+
     if let Ok(max_tokens) = config.get_int("anthropic.max_tokens") {
         log::info!("Overriding anthropic max tokens to {max_tokens}");
         builder = builder.with_max_tokens(max_tokens);
@@ -127,6 +134,8 @@ async fn main() -> Result<(), Error> {
     let mut client = create_client(&settings, event_sender.clone()).await?;
     let mut tui = crate::tui::Tui::new(&settings, event_sender.clone())?;
 
+    let mut conversation = Conversation::default();
+
     tokio::spawn(async move {
         loop {
             input_handler.read_input().await;
@@ -140,10 +149,12 @@ async fn main() -> Result<(), Error> {
 
         match event {
             AppEvent::UserCommand(DmCommand::Exit {}) => {
+                conversation.system("Good bye!");
                 tui.add_message("Good bye!".to_string(), crate::tui::MessageType::System);
                 break;
             }
             AppEvent::UserCommand(DmCommand::Reset {}) => {
+                conversation.system("Conversation reset (not really)");
                 tui.add_message(
                     "Conversation reset (not really)".to_string(),
                     crate::tui::MessageType::System,
@@ -154,10 +165,12 @@ async fn main() -> Result<(), Error> {
                     .unwrap()
                     .roll()
                     .unwrap();
+                conversation.system(format!("🎲 {result}"));
                 tui.add_message(format!("🎲 {result}"), crate::tui::MessageType::System);
             }
             AppEvent::UserAgent(line) => {
                 if !line.is_empty() {
+                    conversation.user(&line);
                     tui.add_message(line.clone(), crate::tui::MessageType::User);
                     client.push(line)?;
                 }
@@ -166,16 +179,25 @@ async fn main() -> Result<(), Error> {
                 log::debug!("Exit event received, exiting");
                 break;
             }
-            AppEvent::AiResponse(msg) => tui.add_message(msg, crate::tui::MessageType::Assistant),
+            AppEvent::AiResponse(msg) => {
+                conversation.assistant(&msg);
+                tui.add_message(msg, crate::tui::MessageType::Assistant);
+            }
             AppEvent::AiThinking(msg, tools) => {
+                conversation.thinking(format!("🤔 {msg}"));
                 tui.add_message(format!("🤔 {msg}"), crate::tui::MessageType::Thinking);
                 client.use_tools(tools).await?;
             }
             AppEvent::AiError(msg) => {
+                conversation.error(format!("❌ {msg}"));
                 tui.add_message(format!("❌ {msg}"), crate::tui::MessageType::Error)
             }
-            AppEvent::CommandResult(msg) => tui.add_message(msg, crate::tui::MessageType::System),
+            AppEvent::CommandResult(msg) => {
+                conversation.system(&msg);
+                tui.add_message(msg, crate::tui::MessageType::System)
+            }
             AppEvent::CommandError(msg) => {
+                conversation.error(&msg);
                 tui.add_message(format!("Error: {msg}"), crate::tui::MessageType::Error)
             }
             AppEvent::InputUpdated { line, cursor } => tui.input_updated(line, cursor),
