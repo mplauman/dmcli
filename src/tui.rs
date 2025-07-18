@@ -37,10 +37,7 @@ pub enum MessageType {
 
 pub struct Tui {
     terminal: Terminal<CrosstermBackend<Stdout>>,
-    current_line: String,
-    cursor_position: usize,
     conversation: VecDeque<ConversationMessage>,
-    input_height: u16,
     scroll_offset: u16,
     terminal_width: u16,
     terminal_height: u16,
@@ -63,10 +60,7 @@ impl Tui {
 
         let mut tui = Self {
             terminal,
-            current_line: String::new(),
-            cursor_position: 0,
             conversation: VecDeque::new(),
-            input_height: 3,
             scroll_offset: 0,
             terminal_width: size.width,
             terminal_height: size.height,
@@ -82,8 +76,13 @@ impl Tui {
         Ok(tui)
     }
 
-    pub fn render(&mut self) -> Result<(), Error> {
-        self.update_input_height();
+    pub fn render(
+        &mut self,
+        _conversation: &crate::conversation::Conversation,
+        input: &str,
+        cursor: usize,
+    ) -> Result<(), Error> {
+        let input_height = self.calculate_input_height(input);
 
         let size = ratatui::layout::Rect {
             x: 0,
@@ -95,7 +94,7 @@ impl Tui {
         // Create layout with conversation on top and input on bottom
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(self.input_height)])
+            .constraints([Constraint::Min(1), Constraint::Length(input_height)])
             .split(size);
 
         let paragraph = Self::render_paragraph(
@@ -106,14 +105,7 @@ impl Tui {
         );
 
         self.terminal.draw(|f| {
-            Self::render_ui_static(
-                f,
-                self.input_height,
-                &self.current_line,
-                self.cursor_position,
-                paragraph,
-                chunks[0],
-            );
+            Self::render_ui_static(f, input_height, input, cursor, paragraph, chunks[0]);
         })?;
 
         Ok(())
@@ -135,19 +127,12 @@ impl Tui {
         self.scroll_offset = 0;
     }
 
-    pub fn input_updated(&mut self, current_line: String, cursor_position: usize) {
-        self.current_line = current_line;
-        self.cursor_position = cursor_position;
-        self.update_input_height();
-    }
-
     pub fn resized(&mut self, width: u16, height: u16) {
         log::debug!("Window resized: {width}x{height}");
         self.terminal_width = width;
         self.terminal_height = height;
         self.markdown_renderer
             .with_width(width.saturating_sub(4) as usize);
-        self.update_input_height();
 
         for message in self.conversation.iter_mut() {
             message.lines = None;
@@ -162,13 +147,13 @@ impl Tui {
         self.scroll_offset = self.scroll_offset.saturating_sub(10_u16);
     }
 
-    fn update_input_height(&mut self) {
+    fn calculate_input_height(&self, input_text: &str) -> u16 {
         let available_width = self.terminal_width.saturating_sub(4); // Account for borders
 
-        let lines = if self.current_line.is_empty() {
+        let lines = if input_text.is_empty() {
             1
         } else {
-            self.current_line
+            input_text
                 .lines()
                 .map(|line| {
                     if line.len() as u16 <= available_width {
@@ -181,7 +166,7 @@ impl Tui {
                 .max(1)
         };
 
-        self.input_height = (lines + 2).min(10); // Cap at 10 lines maximum
+        (lines + 2).min(10) // Cap at 10 lines maximum
     }
 
     fn render_ui_static(

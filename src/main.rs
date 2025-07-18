@@ -135,6 +135,8 @@ async fn main() -> Result<(), Error> {
     let mut tui = crate::tui::Tui::new(&settings, event_sender.clone())?;
 
     let mut conversation = Conversation::default();
+    let mut input_text = String::new();
+    let mut input_cursor = usize::default();
 
     tokio::spawn(async move {
         loop {
@@ -143,7 +145,7 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    tui.render()?;
+    tui.render(&conversation, &input_text, input_cursor)?;
     while let Ok(event) = event_receiver.recv().await {
         log::debug!("Got event, updating");
 
@@ -200,13 +202,16 @@ async fn main() -> Result<(), Error> {
                 conversation.error(&msg);
                 tui.add_message(format!("Error: {msg}"), crate::tui::MessageType::Error)
             }
-            AppEvent::InputUpdated { line, cursor } => tui.input_updated(line, cursor),
+            AppEvent::InputUpdated { line, cursor } => {
+                input_text = line.clone();
+                input_cursor = cursor;
+            }
             AppEvent::WindowResized { width, height } => tui.resized(width, height),
             AppEvent::ScrollBack => tui.handle_scroll_back(),
             AppEvent::ScrollForward => tui.handle_scroll_forward(),
         }
 
-        tui.render()?
+        tui.render(&conversation, &input_text, input_cursor)?
     }
 
     log::info!("Exiting cleanly");
