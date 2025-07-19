@@ -5,17 +5,21 @@ use llm::backends::anthropic::Anthropic;
 use llm::chat::{
     ChatMessage, ChatProvider, ChatRole, FunctionTool, MessageType as LlmMessageType, Tool,
 };
-use llm::memory::{ChatWithMemory, SlidingWindowMemory, TrimStrategy};
 use llm::{FunctionCall, ToolCall};
+use memvdb::{CacheDB, Embedding};
+use model2vec_rs::model::StaticModel;
 use rmcp::{
     RoleClient, RoleServer, Service, ServiceExt,
     model::{CallToolRequestParam, CallToolResult, RawContent},
     service::{DynService, RunningService},
 };
+use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 type McpClient = RunningService<RoleClient, Box<dyn DynService<RoleClient> + 'static>>;
+
+// Include the generated constants from the build script
+include!(concat!(env!("OUT_DIR"), "/model_constants.rs"));
 
 static SYSTEM_PROMPT: &str = "
 You are a dungeon master's helpful assistant. You're role is to help them search through their notes to
@@ -58,47 +62,13 @@ Use this stat block format for monsters:
 ";
 
 pub struct Client {
-    pub llm_client: Arc<dyn ChatProvider>,
-    pub mcp_clients: Vec<McpClient>,
-    pub tools: Vec<serde_json::Value>,
-    pub event_sender: async_channel::Sender<AppEvent>,
-}
-
-// Test helper functions
-#[cfg(test)]
-impl Client {
-    // For testing purposes - tests the message removal logic for MaxTokens error
-    pub fn test_max_tokens_handling(&self, messages: &mut Vec<ChatMessage>) -> usize {
-        let mut max_tokens_retry_count = 0;
-        let max_tokens_max_retries = 5;
-
-        while max_tokens_retry_count < max_tokens_max_retries {
-            max_tokens_retry_count += 1;
-
-            if messages.len() <= 2 {
-                // Cannot remove any more messages without losing context
-                println!("Cannot remove any more messages without losing context");
-                break;
-            }
-
-            // Remove the oldest non-system message (index 0 is usually the first user message)
-            println!(
-                "Max tokens reached. Removing oldest message and retrying. Attempt {max_tokens_retry_count} of {max_tokens_max_retries}"
-            );
-
-            // For test purposes, only remove if we still have more than 2 messages
-            if messages.len() > 2 {
-                messages.remove(1); // Keep the first message, remove the second oldest
-            } else {
-                break;
-            }
-
-            // For testing purposes, we'll just continue until we hit the retry limit
-            // In real usage, the loop would retry the API call after removing a message
-        }
-
-        max_tokens_retry_count
-    }
+    llm_client: Arc<dyn ChatProvider>,
+    mcp_clients: Vec<McpClient>,
+    tools: Vec<serde_json::Value>,
+    event_sender: async_channel::Sender<AppEvent>,
+    cache: CacheDB,
+    embedder: StaticModel,
+    recent_messages: Vec<ChatMessage>,
 }
 
 impl Client {
@@ -112,7 +82,45 @@ impl Client {
         self.request(messages)
     }
 
-    fn request(&self, messages: Vec<ChatMessage>) -> Result<(), Error> {
+    fn request(&mut self, messages: Vec<ChatMessage>) -> Result<(), Error> {
+        let embeddings = self.embedder.encode(
+            &messages
+                .iter()
+                .map(|m| {
+                    let role = match m.role {
+                        ChatRole::User => "User",
+                        ChatRole::Assistant => "Assistant",
+                    };
+                    format!("{}: {}", role, m.content)
+                })
+                .collect::<Vec<String>>(),
+        );
+
+        let mut index = self.recent_messages.len();
+        let embeddings = messages
+            .iter()
+            .zip(embeddings)
+            .map(|(msg, vector)| {
+                let id = HashMap::from([("index".to_string(), index.to_string())]);
+                index = index.saturating_add(1);
+
+                let metadata = Some(HashMap::from([(
+                    "content".to_string(),
+                    msg.content.clone(),
+                )]));
+
+                Embedding {
+                    id,
+                    vector,
+                    metadata,
+                }
+            })
+            .collect::<Vec<Embedding>>();
+
+        self.cache.update_collection("messages", embeddings)?;
+        self.recent_messages.extend(messages);
+        let messages = self.recent_messages.clone();
+
         // Convert our tools to the LLM crate's format
         let llm_tools: Vec<Tool> = self
             .tools
@@ -325,12 +333,12 @@ impl Client {
 }
 
 pub struct ClientBuilder {
-    pub api_key: Option<String>,
-    pub model: String,
-    pub max_tokens: i64,
-    pub window_size: usize,
-    pub mcp_clients: Vec<McpClient>,
-    pub event_sender: Option<async_channel::Sender<AppEvent>>,
+    api_key: Option<String>,
+    model: String,
+    max_tokens: i64,
+    mcp_clients: Vec<McpClient>,
+    event_sender: Option<async_channel::Sender<AppEvent>>,
+    embedding_model: Option<String>,
 }
 
 impl Default for ClientBuilder {
@@ -339,9 +347,9 @@ impl Default for ClientBuilder {
             api_key: None,
             model: "claude-3-5-haiku-20241022".to_owned(),
             max_tokens: 8192,
-            window_size: 5,
             mcp_clients: Vec::default(),
             event_sender: None,
+            embedding_model: None,
         }
     }
 }
@@ -361,25 +369,6 @@ impl ClientBuilder {
         Self { max_tokens, ..self }
     }
 
-    /// Sets the sliding window size for chat memory management.
-    ///
-    /// The window size determines how many recent messages are kept in memory
-    /// before older messages are trimmed using the configured strategy.
-    ///
-    /// # Arguments
-    /// * `window_size` - The number of messages to keep in the sliding window (default: 32)
-    ///
-    /// # Example
-    /// ```
-    /// let builder = ClientBuilder::default().with_window_size(64);
-    /// ```
-    pub fn with_window_size(self, window_size: usize) -> Self {
-        Self {
-            window_size,
-            ..self
-        }
-    }
-
     pub fn with_event_sender(self, event_sender: async_channel::Sender<AppEvent>) -> Self {
         Self {
             event_sender: Some(event_sender),
@@ -387,18 +376,28 @@ impl ClientBuilder {
         }
     }
 
-    pub async fn with_toolkit<T: Service<RoleServer> + Send + 'static>(self, toolkit: T) -> Self {
+    pub fn with_embedding_model(self, embedding_model: String) -> Self {
+        Self {
+            embedding_model: Some(embedding_model),
+            ..self
+        }
+    }
+
+    pub async fn with_toolkit<T: Service<RoleServer> + Send + 'static>(
+        self,
+        toolkit: T,
+    ) -> Result<Self, Error> {
         let server = rmcp_in_process_transport::in_process::TokioInProcess::new(toolkit);
-        let server = server.serve().await.unwrap();
-        let server = ().into_dyn().serve(server).await.unwrap();
+        let server = server.serve().await?;
+        let server = ().into_dyn().serve(server).await?;
 
         let mut mcp_clients = self.mcp_clients;
         mcp_clients.push(server);
 
-        Self {
+        Ok(Self {
             mcp_clients,
             ..self
-        }
+        })
     }
 
     pub async fn build(self) -> Result<Client, Error> {
@@ -421,17 +420,6 @@ impl ClientBuilder {
             None,        // thinking_budget_tokens
         );
 
-        let llm_client = ChatWithMemory::new(
-            Arc::new(llm_client),
-            Arc::new(RwLock::new(Box::new(SlidingWindowMemory::with_strategy(
-                self.window_size,
-                TrimStrategy::Summarize,
-            )))),
-            None,
-            Vec::new(),
-            None,
-        );
-
         // Collect tools from MCP clients
         let mut tools = Vec::<serde_json::Value>::default();
         for mcp_client in &self.mcp_clients {
@@ -452,11 +440,46 @@ impl ClientBuilder {
 
         log::info!("Added tools: {}", serde_json::to_string(&tools).unwrap());
 
+        let embedding_model_or_path = match self.embedding_model {
+            Some(embedding_model) => embedding_model,
+            None => {
+                let folder = dirs::cache_dir().expect("cache dir exists").join("dmcli");
+
+                if !folder.exists() {
+                    std::fs::create_dir_all(&folder)?;
+                    std::fs::write(folder.join("tokenizer.json"), TOKENIZER_BYTES)?;
+                    std::fs::write(folder.join("model.safetensors"), MODEL_BYTES)?;
+                    std::fs::write(folder.join("config.json"), CONFIG_BYTES)?;
+                }
+
+                folder.to_string_lossy().into_owned()
+            }
+        };
+
+        log::info!("Loading Model2Vec model: {embedding_model_or_path}");
+        let embedder = StaticModel::from_pretrained(
+            embedding_model_or_path,
+            None, // No HuggingFace token needed for public models
+            None, // Use default normalization from model config
+            None, // No subfolder
+        )
+        .map_err(|e| Error::Embedding(format!("{e}")))?;
+
+        let mut cache = CacheDB::new();
+        cache.create_collection(
+            "messages".into(),
+            embedder.encode_single("test").len(),
+            memvdb::Distance::Cosine,
+        )?;
+
         let client = Client {
             llm_client: Arc::new(llm_client),
             tools,
             mcp_clients: self.mcp_clients,
             event_sender: self.event_sender.expect("event_sender must be set"),
+            embedder,
+            cache,
+            recent_messages: Vec::new(),
         };
 
         Ok(client)
@@ -610,72 +633,6 @@ fn test_claude_response_serde() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_max_tokens_retry_behavior() {
-        // Create a basic client for testing
-        let (tx, _rx) = async_channel::unbounded();
-
-        // Create a test LLM client
-        let llm_client = Anthropic::new(
-            "test-key".to_string(),
-            Some("claude-3-opus-20240229".to_string()),
-            Some(1024),
-            None,
-            None,
-            None,
-            Some(false),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-
-        let client = Client {
-            llm_client: Arc::new(llm_client),
-            mcp_clients: vec![],
-            tools: vec![],
-            event_sender: tx,
-        };
-
-        // Set up messages with a few entries to test removal
-        let mut messages = vec![
-            ChatMessage {
-                role: ChatRole::User,
-                message_type: LlmMessageType::Text,
-                content: "Initial message".to_string(),
-            },
-            ChatMessage {
-                role: ChatRole::User,
-                message_type: LlmMessageType::Text,
-                content: "Message 2".to_string(),
-            },
-            ChatMessage {
-                role: ChatRole::User,
-                message_type: LlmMessageType::Text,
-                content: "Message 3".to_string(),
-            },
-            ChatMessage {
-                role: ChatRole::User,
-                message_type: LlmMessageType::Text,
-                content: "Message 4".to_string(),
-            },
-        ];
-
-        // Test the MaxTokens handling directly
-        let retry_count = client.test_max_tokens_handling(&mut messages);
-
-        // Should stop after going through all messages except the first one
-        assert_eq!(retry_count, 3);
-
-        // Verify that messages were removed (started with 4, should have 2 left)
-        assert_eq!(messages.len(), 2);
-
-        // Check if the first message contains our expected initial message
-        assert_eq!(messages[0].content, "Initial message");
-    }
 
     #[test]
     fn test_multiple_tool_use_extraction() {
@@ -1025,23 +982,5 @@ mod tests {
             }
             _ => panic!("Expected tool result"),
         }
-    }
-
-    #[test]
-    fn test_window_size_configuration() {
-        // Test default window size
-        let builder = ClientBuilder::default();
-        assert_eq!(builder.window_size, 5);
-
-        // Test custom window size
-        let builder = ClientBuilder::default().with_window_size(64);
-        assert_eq!(builder.window_size, 64);
-
-        // Test chaining with other builder methods
-        let builder = ClientBuilder::default()
-            .with_window_size(128)
-            .with_max_tokens(4096);
-        assert_eq!(builder.window_size, 128);
-        assert_eq!(builder.max_tokens, 4096);
     }
 }
