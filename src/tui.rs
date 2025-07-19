@@ -1,4 +1,4 @@
-use crate::conversation::{Conversation, Id, Message, Role};
+use crate::conversation::{Conversation, Id, Message};
 use crate::errors::Error;
 use crate::events::AppEvent;
 use crate::markdown::MarkdownRenderer;
@@ -164,28 +164,39 @@ impl Tui {
         let rendered_lines = conversation
             .into_iter()
             .flat_map(|msg| {
-                let style = match msg.role {
-                    Role::User => Style::default().fg(Color::Cyan),
-                    Role::Assistant => Style::default().fg(Color::Green),
-                    Role::System => Style::default().fg(Color::Yellow),
-                    Role::Thinking => Style::default()
-                        .fg(Color::Magenta)
-                        .add_modifier(Modifier::ITALIC),
-                    Role::Error => Style::default().fg(Color::Red),
+                let (style, id, content) = match msg {
+                    Message::User { id, content } => {
+                        (Style::default().fg(Color::Cyan), id, content)
+                    }
+                    Message::Assistant { id, content } => {
+                        (Style::default().fg(Color::Green), id, content)
+                    }
+                    Message::System { id, content } => {
+                        (Style::default().fg(Color::Yellow), id, content)
+                    }
+                    Message::Thinking { id, content } => (
+                        Style::default()
+                            .fg(Color::Magenta)
+                            .add_modifier(Modifier::ITALIC),
+                        id,
+                        content,
+                    ),
+                    Message::Error { id, content } => {
+                        (Style::default().fg(Color::Red), id, content)
+                    }
                 };
 
-                let rendered_content = if let Some(cached) = self.formatted.get(&msg.id) {
+                let rendered_content = if let Some(cached) = self.formatted.get(id) {
                     cached.clone()
                 } else {
                     let rendered_content = self
                         .markdown_renderer
-                        .render(&msg.content)
+                        .render(content)
                         .lines()
                         .map(str::to_owned)
                         .collect::<Vec<_>>();
 
-                    self.formatted
-                        .insert(msg.id.clone(), rendered_content.clone());
+                    self.formatted.insert(id.clone(), rendered_content.clone());
                     rendered_content
                 };
 
