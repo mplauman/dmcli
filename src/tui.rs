@@ -1,3 +1,4 @@
+use crate::conversation::{Conversation, Id, Message, Role};
 use crate::errors::Error;
 use crate::events::AppEvent;
 use crate::markdown::MarkdownRenderer;
@@ -15,29 +16,14 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use std::{
+    collections::HashMap,
     collections::VecDeque,
     io::{self, Stdout},
 };
 
-#[derive(Clone, Debug)]
-pub struct ConversationMessage {
-    pub content: String,
-    pub message_type: MessageType,
-    pub lines: Option<Vec<String>>,
-}
-
-#[derive(Clone, Debug)]
-pub enum MessageType {
-    User,
-    Assistant,
-    System,
-    Thinking,
-    Error,
-}
-
 pub struct Tui {
     terminal: Terminal<CrosstermBackend<Stdout>>,
-    conversation: VecDeque<ConversationMessage>,
+    formatted: HashMap<Id, Vec<String>>,
     scroll_offset: u16,
     terminal_width: u16,
     terminal_height: u16,
@@ -58,27 +44,21 @@ impl Tui {
 
         let size = terminal.size()?;
 
-        let mut tui = Self {
+        let tui = Self {
             terminal,
-            conversation: VecDeque::new(),
+            formatted: HashMap::new(),
             scroll_offset: 0,
             terminal_width: size.width,
             terminal_height: size.height,
             markdown_renderer: MarkdownRenderer::new(size.width.saturating_sub(4) as usize),
         };
 
-        // Add welcome message
-        tui.add_message(
-            "Welcome to dmcli! Type your message and press Enter to send. Send 'roll 2d6' to roll a dice or 'exit' to quit.".to_string(),
-            MessageType::System,
-        );
-
         Ok(tui)
     }
 
     pub fn render(
         &mut self,
-        _conversation: &crate::conversation::Conversation,
+        conversation: &Conversation,
         input: &str,
         cursor: usize,
     ) -> Result<(), Error> {
@@ -97,34 +77,13 @@ impl Tui {
             .constraints([Constraint::Min(1), Constraint::Length(input_height)])
             .split(size);
 
-        let paragraph = Self::render_paragraph(
-            &mut self.conversation,
-            &mut self.markdown_renderer,
-            &mut self.scroll_offset,
-            chunks[0],
-        );
+        let paragraph = self.render_paragraph(conversation, chunks[0]);
 
         self.terminal.draw(|f| {
             Self::render_ui_static(f, input_height, input, cursor, paragraph, chunks[0]);
         })?;
 
         Ok(())
-    }
-
-    pub fn add_message(&mut self, content: String, message_type: MessageType) {
-        self.conversation.push_back(ConversationMessage {
-            content,
-            message_type,
-            lines: None,
-        });
-
-        // Keep conversation history reasonable (last 100 messages)
-        if self.conversation.len() > 100 {
-            self.conversation.pop_front();
-        }
-
-        // Auto-scroll to bottom when new messages are added
-        self.scroll_offset = 0;
     }
 
     pub fn resized(&mut self, width: u16, height: u16) {
@@ -134,9 +93,7 @@ impl Tui {
         self.markdown_renderer
             .with_width(width.saturating_sub(4) as usize);
 
-        for message in self.conversation.iter_mut() {
-            message.lines = None;
-        }
+        self.formatted.clear();
     }
 
     pub fn handle_scroll_back(&mut self) {
@@ -145,6 +102,10 @@ impl Tui {
 
     pub fn handle_scroll_forward(&mut self) {
         self.scroll_offset = self.scroll_offset.saturating_sub(10_u16);
+    }
+
+    pub fn reset_scroll(&mut self) {
+        self.scroll_offset = 0;
     }
 
     fn calculate_input_height(&self, input_text: &str) -> u16 {
@@ -192,39 +153,39 @@ impl Tui {
         Self::render_input_static(f, chunks[1], current_line, cursor_position);
     }
 
-    fn render_paragraph(
-        conversation: &mut VecDeque<ConversationMessage>,
-        markdown_renderer: &mut MarkdownRenderer,
-        in_scroll_offset: &mut u16,
+    fn render_paragraph<'a>(
+        &mut self,
+        conversation: impl IntoIterator<Item = &'a Message>,
         area: ratatui::layout::Rect,
     ) -> Paragraph<'static> {
         let mut lines: VecDeque<Line<'static>> = VecDeque::with_capacity(area.height as usize - 2);
-        let mut scroll_offset = *in_scroll_offset;
+        let mut scroll_offset = self.scroll_offset;
 
         let rendered_lines = conversation
-            .iter_mut()
-            .rev()
+            .into_iter()
             .flat_map(|msg| {
-                let style = match msg.message_type {
-                    MessageType::User => Style::default().fg(Color::Cyan),
-                    MessageType::Assistant => Style::default().fg(Color::Green),
-                    MessageType::System => Style::default().fg(Color::Yellow),
-                    MessageType::Thinking => Style::default()
+                let style = match msg.role {
+                    Role::User => Style::default().fg(Color::Cyan),
+                    Role::Assistant => Style::default().fg(Color::Green),
+                    Role::System => Style::default().fg(Color::Yellow),
+                    Role::Thinking => Style::default()
                         .fg(Color::Magenta)
                         .add_modifier(Modifier::ITALIC),
-                    MessageType::Error => Style::default().fg(Color::Red),
+                    Role::Error => Style::default().fg(Color::Red),
                 };
 
-                let rendered_content = if let Some(cached) = msg.lines.as_ref() {
+                let rendered_content = if let Some(cached) = self.formatted.get(&msg.id) {
                     cached.clone()
                 } else {
-                    let rendered_content = markdown_renderer
+                    let rendered_content = self
+                        .markdown_renderer
                         .render(&msg.content)
                         .lines()
                         .map(str::to_owned)
                         .collect::<Vec<_>>();
 
-                    msg.lines = Some(rendered_content.clone());
+                    self.formatted
+                        .insert(msg.id.clone(), rendered_content.clone());
                     rendered_content
                 };
 
@@ -254,7 +215,7 @@ impl Tui {
         }
 
         // Fixes up any over-scrolling
-        *in_scroll_offset -= scroll_offset;
+        self.scroll_offset -= scroll_offset;
 
         let text = Text::from(lines.into_iter().collect::<Vec<_>>());
 

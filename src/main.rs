@@ -145,6 +145,8 @@ async fn main() -> Result<(), Error> {
         }
     });
 
+    conversation.system("Welcome to dmcli! Type your message and press Enter to send. Send 'roll 2d6' to roll a dice or 'exit' to quit.");
+
     tui.render(&conversation, &input_text, input_cursor)?;
     while let Ok(event) = event_receiver.recv().await {
         log::debug!("Got event, updating");
@@ -152,15 +154,12 @@ async fn main() -> Result<(), Error> {
         match event {
             AppEvent::UserCommand(DmCommand::Exit {}) => {
                 conversation.system("Good bye!");
-                tui.add_message("Good bye!".to_string(), crate::tui::MessageType::System);
+                tui.reset_scroll();
                 break;
             }
             AppEvent::UserCommand(DmCommand::Reset {}) => {
                 conversation.system("Conversation reset (not really)");
-                tui.add_message(
-                    "Conversation reset (not really)".to_string(),
-                    crate::tui::MessageType::System,
-                );
+                tui.reset_scroll();
             }
             AppEvent::UserCommand(DmCommand::Roll { expressions }) => {
                 let result = caith::Roller::new(&expressions.join(" "))
@@ -168,12 +167,12 @@ async fn main() -> Result<(), Error> {
                     .roll()
                     .unwrap();
                 conversation.system(format!("🎲 {result}"));
-                tui.add_message(format!("🎲 {result}"), crate::tui::MessageType::System);
+                tui.reset_scroll();
             }
             AppEvent::UserAgent(line) => {
                 if !line.is_empty() {
                     conversation.user(&line);
-                    tui.add_message(line.clone(), crate::tui::MessageType::User);
+                    tui.reset_scroll();
                     client.push(line)?;
                 }
             }
@@ -183,24 +182,24 @@ async fn main() -> Result<(), Error> {
             }
             AppEvent::AiResponse(msg) => {
                 conversation.assistant(&msg);
-                tui.add_message(msg, crate::tui::MessageType::Assistant);
+                tui.reset_scroll();
             }
             AppEvent::AiThinking(msg, tools) => {
                 conversation.thinking(format!("🤔 {msg}"));
-                tui.add_message(format!("🤔 {msg}"), crate::tui::MessageType::Thinking);
+                tui.reset_scroll();
                 client.use_tools(tools).await?;
             }
             AppEvent::AiError(msg) => {
                 conversation.error(format!("❌ {msg}"));
-                tui.add_message(format!("❌ {msg}"), crate::tui::MessageType::Error)
+                tui.reset_scroll();
             }
             AppEvent::CommandResult(msg) => {
                 conversation.system(&msg);
-                tui.add_message(msg, crate::tui::MessageType::System)
+                tui.reset_scroll();
             }
             AppEvent::CommandError(msg) => {
                 conversation.error(&msg);
-                tui.add_message(format!("Error: {msg}"), crate::tui::MessageType::Error)
+                tui.reset_scroll();
             }
             AppEvent::InputUpdated { line, cursor } => {
                 input_text = line.clone();
