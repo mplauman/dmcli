@@ -193,14 +193,6 @@ async fn main() -> Result<(), Error> {
                 conversation.error(format!("❌ {msg}"));
                 tui.reset_scroll();
             }
-            AppEvent::CommandResult(msg) => {
-                conversation.system(msg);
-                tui.reset_scroll();
-            }
-            AppEvent::CommandError(msg) => {
-                conversation.error(msg);
-                tui.reset_scroll();
-            }
             AppEvent::InputUpdated { line, cursor } => {
                 input_text = line.clone();
                 input_cursor = cursor;
