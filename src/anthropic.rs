@@ -1,7 +1,7 @@
 use crate::embeddings::Embeddings;
 use crate::errors::Error;
 use crate::events::AppEvent;
-use futures::future;
+use futures::{FutureExt, future};
 use llm::backends::anthropic::Anthropic;
 use llm::chat::{
     ChatMessage, ChatProvider, ChatRole, FunctionTool, MessageType as LlmMessageType, Tool,
@@ -113,28 +113,26 @@ impl InnerClient {
         Ok(())
     }
 
+    fn send_app_event(&self, event: AppEvent) {
+        if let Err(e) = self.event_sender.try_send(event) {
+            panic!("Failed to send event to UI thread: {e:?}");
+        }
+    }
+
+    fn send_internal_action(&self, event: ClientAction) {
+        if let Err(e) = self.client_sender.try_send(event) {
+            panic!("Failed to send event to internal thread: {e:?}");
+        }
+    }
+
     async fn request(&mut self, messages: Vec<ChatMessage>) -> Result<(), Error> {
         self.embeddings.embed(messages.clone())?;
-
-        let event_sender = self.event_sender.clone();
-        let send_event = move |event| {
-            if let Err(e) = event_sender.try_send(event) {
-                panic!("Failed to send event to UI thread: {e:?}");
-            }
-        };
-
-        let client_event_sender = self.client_sender.clone();
-        let send_client_event = move |event| {
-            if let Err(e) = client_event_sender.try_send(event) {
-                panic!("Failed to send event to AI client: {e:?}");
-            }
-        };
 
         let response = match self.llm_client.chat(&messages).await {
             Ok(response) => response,
             Err(e) => {
                 log::error!("AI request failed: {e:?}");
-                send_event(AppEvent::AiError("failed to send AI request".into()));
+                self.send_app_event(AppEvent::AiError("failed to send AI request".into()));
                 return Ok(());
             }
         };
@@ -142,7 +140,7 @@ impl InnerClient {
         // Check if there are tool calls in the response
         let Some(tool_calls) = response.tool_calls() else {
             let message = response.text().unwrap_or_default();
-            send_event(AppEvent::AiResponse(message));
+            self.send_app_event(AppEvent::AiResponse(message));
             return Ok(());
         };
 
@@ -156,8 +154,8 @@ impl InnerClient {
             })
             .collect();
 
-        send_event(AppEvent::AiThinking(message, tools));
-        send_client_event(ClientAction::UseTools(messages, tool_calls));
+        self.send_app_event(AppEvent::AiThinking(message, tools));
+        self.send_internal_action(ClientAction::UseTools(messages, tool_calls));
 
         Ok(())
     }
@@ -167,136 +165,79 @@ impl InnerClient {
         mut messages: Vec<ChatMessage>,
         tools: Vec<ToolCall>,
     ) -> Result<(), Error> {
-        if tools.is_empty() {
-            return Err(Error::NoToolUses);
-        }
-
         log::info!("Found {} tool(s) to execute in parallel", tools.len());
 
-        let tools: Vec<(String, String, serde_json::Value)> = tools
-            .iter()
-            .map(|tc| {
-                let params: serde_json::Value = serde_json::from_str(&tc.function.arguments)
-                    .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()));
-                (tc.id.clone(), tc.function.name.clone(), params)
-            })
-            .collect();
-
-        // Prepare futures for parallel execution
-        let tool_futures = tools.iter().map(|(id, name, params)| {
-            self.execute_single_tool(id.clone(), name.clone(), params.clone())
-        });
-
-        // Execute all tool futures in parallel
-        let tool_results = future::join_all(tool_futures).await;
-
-        // Process results and prepare the messages
-
-        // First add all tool uses to the assistant message
-        let tool_calls: Vec<ToolCall> = tools
-            .iter()
-            .map(|(id, name, params)| ToolCall {
-                id: id.clone(),
-                call_type: "function".to_string(),
-                function: FunctionCall {
-                    name: name.clone(),
-                    arguments: serde_json::to_string(params).unwrap_or_default(),
-                },
-            })
-            .collect();
-
-        messages.push(ChatMessage {
-            role: ChatRole::Assistant,
-            message_type: LlmMessageType::ToolUse(tool_calls),
-            content: String::new(),
-        });
-
-        // Then add all tool results to the user message
-        let tool_result_calls: Vec<ToolCall> = tool_results
-            .into_iter()
-            .zip(tools.iter())
-            .map(|(result, (id, name, _))| {
+        let tool_futures = tools.iter().map(|tool| {
+            self.execute_single_tool(tool).map(|result| {
                 let content = match result {
-                    Ok(contents) => {
-                        let content_texts: Vec<String> = contents
-                            .iter()
-                            .filter_map(|c| match c {
-                                Content::Text { text } => Some(text.clone()),
-                                _ => None,
-                            })
-                            .collect();
-                        content_texts.join("\n")
-                    }
+                    Ok(contents) => contents
+                        .iter()
+                        .filter_map(|c| match c {
+                            Content::Text { text } => Some(text.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
                     Err(e) => {
-                        log::error!("Error executing tool {name}: {e:?}");
+                        log::error!("Error executing tool {}: {e:?}", tool.function.name);
                         format!("Error executing tool: {e}")
                     }
                 };
 
                 ToolCall {
-                    id: id.clone(),
-                    call_type: "function".to_string(),
+                    id: tool.id.clone(),
+                    call_type: tool.call_type.clone(),
                     function: FunctionCall {
-                        name: name.clone(),
+                        name: tool.function.name.clone(),
                         arguments: content,
                     },
                 }
             })
+        });
+        let tool_results = future::join_all(tool_futures).await;
+
+        let ui_results: Vec<(String, String, String)> = tool_results
+            .iter()
+            .map(|t| {
+                (
+                    t.id.clone(),
+                    t.function.name.clone(),
+                    t.function.arguments.clone(),
+                )
+            })
             .collect();
+        self.send_app_event(AppEvent::AiThinkingDone(ui_results));
 
         messages.push(ChatMessage {
-            role: ChatRole::User,
-            message_type: LlmMessageType::ToolResult(tool_result_calls.clone()),
+            role: ChatRole::Assistant,
+            message_type: LlmMessageType::ToolUse(tools),
             content: String::new(),
         });
-
-        // Note: For a comprehensive test suite, we would also want to test:
-        // 1. Timeouts in parallel tool execution
-        // 2. Partial failures (some tools succeed, some fail)
-        // 3. Concurrent requests with different sets of tools
-        // 4. Various response formats from the Anthropic API
-        // 5. Error propagation from the MCP clients
-        let send_client_event = move |event| {
-            if let Err(e) = self.client_sender.try_send(event) {
-                panic!("Failed to send event to AI client: {e:?}");
-            }
-        };
-        let send_ui_event = move |event| {
-            if let Err(e) = self.event_sender.try_send(event) {
-                panic!("Failed to send UI event: {e:?}");
-            }
-        };
-        send_client_event(ClientAction::MakeRequest(messages));
-
-        let results: Vec<(String, String, String)> = tool_result_calls
-            .into_iter()
-            .map(|t| (t.id, t.function.name, t.function.arguments))
-            .collect();
-        send_ui_event(AppEvent::AiThinkingDone(results));
+        messages.push(ChatMessage {
+            role: ChatRole::User,
+            message_type: LlmMessageType::ToolResult(tool_results),
+            content: String::new(),
+        });
+        self.send_internal_action(ClientAction::MakeRequest(messages));
 
         Ok(())
     }
 
     // Helper method to execute a single tool across all MCP clients
-    async fn execute_single_tool(
-        &self,
-        id: String,
-        name: String,
-        params: serde_json::Value,
-    ) -> Result<Vec<Content>, Error> {
-        log::info!("Executing tool invocation {id} for {name}: {params:#?}");
+    async fn execute_single_tool(&self, tool: &ToolCall) -> Result<Vec<Content>, Error> {
+        log::info!(
+            "Executing tool invocation {} for {}: {}",
+            tool.id,
+            tool.function.name,
+            tool.function.arguments,
+        );
 
         let mut contents = Vec::<Content>::default();
         for mcp_client in &self.mcp_clients {
             let request_param = CallToolRequestParam {
-                name: name.clone().into(),
-                arguments: match &params {
-                    serde_json::Value::Object(o) => Some(o.clone()),
-                    x => {
-                        log::warn!("Unexpected tool parameters {x:?}");
-                        None
-                    }
-                },
+                name: tool.function.name.clone().into(),
+                arguments: serde_json::from_str(&tool.function.arguments)
+                    .expect("tool arguments are a JSON object"),
             };
 
             let request_result: CallToolResult = mcp_client.call_tool(request_param).await?;
@@ -316,7 +257,7 @@ impl InnerClient {
 
         if contents.is_empty() {
             contents.push(Content::Text {
-                text: format!("No results returned for tool: {name}"),
+                text: format!("No results returned for tool: {}", tool.function.name),
             });
         }
 
