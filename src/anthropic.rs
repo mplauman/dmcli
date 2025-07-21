@@ -92,7 +92,6 @@ impl Client {
 struct InnerClient {
     llm_client: Box<dyn ChatProvider>,
     mcp_clients: Vec<McpClient>,
-    tools: Vec<Tool>,
     event_sender: async_channel::Sender<AppEvent>,
     client_sender: async_channel::Sender<ClientAction>,
     client_receiver: async_channel::Receiver<ClientAction>,
@@ -131,11 +130,7 @@ impl InnerClient {
             }
         };
 
-        let response = match self
-            .llm_client
-            .chat_with_tools(&messages, Some(&self.tools))
-            .await
-        {
+        let response = match self.llm_client.chat(&messages).await {
             Ok(response) => response,
             Err(e) => {
                 log::error!("AI request failed: {e:?}");
@@ -400,23 +395,6 @@ impl ClientBuilder {
     pub async fn build(self) -> Result<Client, Error> {
         let api_key = self.api_key.expect("api-key is set");
 
-        // Create the llm Anthropic client
-        let llm_client = Anthropic::new(
-            api_key.clone(),
-            Some(self.model.clone()),
-            Some(self.max_tokens as u32),
-            None, // temperature - use default
-            None, // timeout - use default
-            Some(SYSTEM_PROMPT.to_string()),
-            Some(false), // stream - not using streaming for now
-            None,        // top_p
-            None,        // top_k
-            None,        // tools - will be handled separately
-            None,        // tool_choice
-            None,        // reasoning
-            None,        // thinking_budget_tokens
-        );
-
         // Collect tools from MCP clients
         let mut tools = Vec::<serde_json::Value>::default();
         for mcp_client in &self.mcp_clients {
@@ -454,6 +432,23 @@ impl ClientBuilder {
             })
             .collect();
 
+        // Create the llm Anthropic client
+        let llm_client = Anthropic::new(
+            api_key.clone(),
+            Some(self.model.clone()),
+            Some(self.max_tokens as u32),
+            None, // temperature - use default
+            None, // timeout - use default
+            Some(SYSTEM_PROMPT.to_string()),
+            Some(false), // stream - not using streaming for now
+            None,        // top_p
+            None,        // top_k
+            Some(llm_tools),
+            None, // tool_choice
+            None, // reasoning
+            None, // thinking_budget_tokens
+        );
+
         log::info!("Added tools: {}", serde_json::to_string(&tools).unwrap());
 
         let mut embeddings_builder = Embeddings::builder();
@@ -465,7 +460,6 @@ impl ClientBuilder {
 
         let mut inner_client = InnerClient {
             llm_client: Box::new(llm_client),
-            tools: llm_tools,
             mcp_clients: self.mcp_clients,
             event_sender: self.event_sender.expect("event_sender must be set"),
             client_receiver,
