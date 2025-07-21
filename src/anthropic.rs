@@ -1,3 +1,4 @@
+use crate::embeddings::Embeddings;
 use crate::errors::Error;
 use crate::events::AppEvent;
 use futures::future;
@@ -6,20 +7,13 @@ use llm::chat::{
     ChatMessage, ChatProvider, ChatRole, FunctionTool, MessageType as LlmMessageType, Tool,
 };
 use llm::{FunctionCall, ToolCall};
-use memvdb::{CacheDB, Embedding};
-use model2vec_rs::model::StaticModel;
 use rmcp::{
     RoleClient, RoleServer, Service, ServiceExt,
     model::{CallToolRequestParam, CallToolResult, RawContent},
     service::{DynService, RunningService},
 };
-use std::collections::HashMap;
-use std::sync::Arc;
 
 type McpClient = RunningService<RoleClient, Box<dyn DynService<RoleClient> + 'static>>;
-
-// Include the generated constants from the build script
-include!(concat!(env!("OUT_DIR"), "/model_constants.rs"));
 
 static SYSTEM_PROMPT: &str = "
 You are a dungeon master's helpful assistant. You're role is to help them search through their notes to
@@ -61,14 +55,22 @@ Use this stat block format for monsters:
 ```
 ";
 
+enum ClientAction {
+    MakeRequest(Vec<ChatMessage>),
+    UseTools(Vec<ChatMessage>, Vec<ToolCall>),
+    Poison,
+}
+
 pub struct Client {
-    llm_client: Arc<dyn ChatProvider>,
-    mcp_clients: Vec<McpClient>,
-    tools: Vec<serde_json::Value>,
-    event_sender: async_channel::Sender<AppEvent>,
-    cache: CacheDB,
-    embedder: StaticModel,
-    recent_messages: Vec<ChatMessage>,
+    client_sender: async_channel::Sender<ClientAction>,
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        self.client_sender
+            .try_send(ClientAction::Poison)
+            .expect("can still send poison signal");
+    }
 }
 
 impl Client {
@@ -79,67 +81,41 @@ impl Client {
             content,
         }];
 
-        self.request(messages)
+        self.client_sender
+            .try_send(ClientAction::MakeRequest(messages))
+            .expect("client sender is still open");
+
+        Ok(())
+    }
+}
+
+struct InnerClient {
+    llm_client: Box<dyn ChatProvider>,
+    mcp_clients: Vec<McpClient>,
+    tools: Vec<Tool>,
+    event_sender: async_channel::Sender<AppEvent>,
+    client_sender: async_channel::Sender<ClientAction>,
+    client_receiver: async_channel::Receiver<ClientAction>,
+    embeddings: Embeddings,
+}
+
+impl InnerClient {
+    async fn run_loop(&mut self) -> Result<(), Error> {
+        while let Ok(action) = self.client_receiver.recv().await {
+            log::debug!("Got event, updating");
+
+            match action {
+                ClientAction::MakeRequest(messages) => self.request(messages).await?,
+                ClientAction::UseTools(messages, tools) => self.use_tools(messages, tools).await?,
+                ClientAction::Poison => break,
+            }
+        }
+
+        Ok(())
     }
 
-    fn request(&mut self, messages: Vec<ChatMessage>) -> Result<(), Error> {
-        let embeddings = self.embedder.encode(
-            &messages
-                .iter()
-                .map(|m| {
-                    let role = match m.role {
-                        ChatRole::User => "User",
-                        ChatRole::Assistant => "Assistant",
-                    };
-                    format!("{}: {}", role, m.content)
-                })
-                .collect::<Vec<String>>(),
-        );
-
-        let mut index = self.recent_messages.len();
-        let embeddings = messages
-            .iter()
-            .zip(embeddings)
-            .map(|(msg, vector)| {
-                let id = HashMap::from([("index".to_string(), index.to_string())]);
-                index = index.saturating_add(1);
-
-                let metadata = Some(HashMap::from([(
-                    "content".to_string(),
-                    msg.content.clone(),
-                )]));
-
-                Embedding {
-                    id,
-                    vector,
-                    metadata,
-                }
-            })
-            .collect::<Vec<Embedding>>();
-
-        self.cache.update_collection("messages", embeddings)?;
-        self.recent_messages.extend(messages);
-        let messages = self.recent_messages.clone();
-
-        // Convert our tools to the LLM crate's format
-        let llm_tools: Vec<Tool> = self
-            .tools
-            .iter()
-            .filter_map(|tool| {
-                let name = tool.get("name")?.as_str()?.to_string();
-                let description = tool.get("description")?.as_str().unwrap_or("").to_string();
-                let input_schema = tool.get("input_schema")?;
-
-                Some(Tool {
-                    tool_type: "function".to_string(),
-                    function: FunctionTool {
-                        name,
-                        description,
-                        parameters: input_schema.clone(),
-                    },
-                })
-            })
-            .collect();
+    async fn request(&mut self, messages: Vec<ChatMessage>) -> Result<(), Error> {
+        self.embeddings.embed(messages.clone())?;
 
         let event_sender = self.event_sender.clone();
         let send_event = move |event| {
@@ -148,58 +124,68 @@ impl Client {
             }
         };
 
-        // Clone the Arc to share the client across the async task
-        let llm_client = Arc::clone(&self.llm_client);
-
-        let _background = tokio::task::spawn(async move {
-            // Pass tools if available
-            let tools_slice = if llm_tools.is_empty() {
-                None
-            } else {
-                Some(llm_tools.as_slice())
-            };
-            let response = match llm_client.chat_with_tools(&messages, tools_slice).await {
-                Ok(response) => response,
-                Err(e) => {
-                    log::error!("AI request failed: {e:?}");
-                    send_event(AppEvent::AiError("failed to send AI request".into()));
-                    return;
-                }
-            };
-
-            // Check if there are tool calls in the response
-            if let Some(tool_calls) = response.tool_calls() {
-                let message = response.text().unwrap_or_default();
-                let tools: Vec<(String, String, serde_json::Value)> = tool_calls
-                    .iter()
-                    .map(|tc| {
-                        let params: serde_json::Value =
-                            serde_json::from_str(&tc.function.arguments).unwrap_or_else(|_| {
-                                serde_json::Value::Object(serde_json::Map::new())
-                            });
-                        (tc.id.clone(), tc.function.name.clone(), params)
-                    })
-                    .collect();
-
-                send_event(AppEvent::AiThinking(message, tools));
-            } else {
-                let message = response.text().unwrap_or_default();
-                send_event(AppEvent::AiResponse(message));
+        let client_event_sender = self.client_sender.clone();
+        let send_client_event = move |event| {
+            if let Err(e) = client_event_sender.try_send(event) {
+                panic!("Failed to send event to AI client: {e:?}");
             }
-        });
+        };
+
+        let response = match self
+            .llm_client
+            .chat_with_tools(&messages, Some(&self.tools))
+            .await
+        {
+            Ok(response) => response,
+            Err(e) => {
+                log::error!("AI request failed: {e:?}");
+                send_event(AppEvent::AiError("failed to send AI request".into()));
+                return Ok(());
+            }
+        };
+
+        // Check if there are tool calls in the response
+        let Some(tool_calls) = response.tool_calls() else {
+            let message = response.text().unwrap_or_default();
+            send_event(AppEvent::AiResponse(message));
+            return Ok(());
+        };
+
+        let message = response.text().unwrap_or_default();
+        let tools: Vec<(String, String, serde_json::Value)> = tool_calls
+            .iter()
+            .map(|tc| {
+                let params: serde_json::Value = serde_json::from_str(&tc.function.arguments)
+                    .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()));
+                (tc.id.clone(), tc.function.name.clone(), params)
+            })
+            .collect();
+
+        send_event(AppEvent::AiThinking(message, tools));
+        send_client_event(ClientAction::UseTools(messages, tool_calls));
 
         Ok(())
     }
 
-    pub async fn use_tools(
-        &mut self,
-        tools: Vec<(String, String, serde_json::Value)>,
+    async fn use_tools(
+        &self,
+        mut messages: Vec<ChatMessage>,
+        tools: Vec<ToolCall>,
     ) -> Result<(), Error> {
         if tools.is_empty() {
             return Err(Error::NoToolUses);
         }
 
         log::info!("Found {} tool(s) to execute in parallel", tools.len());
+
+        let tools: Vec<(String, String, serde_json::Value)> = tools
+            .iter()
+            .map(|tc| {
+                let params: serde_json::Value = serde_json::from_str(&tc.function.arguments)
+                    .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()));
+                (tc.id.clone(), tc.function.name.clone(), params)
+            })
+            .collect();
 
         // Prepare futures for parallel execution
         let tool_futures = tools.iter().map(|(id, name, params)| {
@@ -224,15 +210,11 @@ impl Client {
             })
             .collect();
 
-        let mut messages = Vec::new();
-
-        if !tool_calls.is_empty() {
-            messages.push(ChatMessage {
-                role: ChatRole::Assistant,
-                message_type: LlmMessageType::ToolUse(tool_calls),
-                content: String::new(),
-            });
-        }
+        messages.push(ChatMessage {
+            role: ChatRole::Assistant,
+            message_type: LlmMessageType::ToolUse(tool_calls),
+            content: String::new(),
+        });
 
         // Then add all tool results to the user message
         let tool_result_calls: Vec<ToolCall> = tool_results
@@ -267,13 +249,11 @@ impl Client {
             })
             .collect();
 
-        if !tool_result_calls.is_empty() {
-            messages.push(ChatMessage {
-                role: ChatRole::User,
-                message_type: LlmMessageType::ToolResult(tool_result_calls),
-                content: String::new(),
-            });
-        }
+        messages.push(ChatMessage {
+            role: ChatRole::User,
+            message_type: LlmMessageType::ToolResult(tool_result_calls.clone()),
+            content: String::new(),
+        });
 
         // Note: For a comprehensive test suite, we would also want to test:
         // 1. Timeouts in parallel tool execution
@@ -281,8 +261,25 @@ impl Client {
         // 3. Concurrent requests with different sets of tools
         // 4. Various response formats from the Anthropic API
         // 5. Error propagation from the MCP clients
+        let send_client_event = move |event| {
+            if let Err(e) = self.client_sender.try_send(event) {
+                panic!("Failed to send event to AI client: {e:?}");
+            }
+        };
+        let send_ui_event = move |event| {
+            if let Err(e) = self.event_sender.try_send(event) {
+                panic!("Failed to send UI event: {e:?}");
+            }
+        };
+        send_client_event(ClientAction::MakeRequest(messages));
 
-        self.request(messages)
+        let results: Vec<(String, String, String)> = tool_result_calls
+            .into_iter()
+            .map(|t| (t.id, t.function.name, t.function.arguments))
+            .collect();
+        send_ui_event(AppEvent::AiThinkingDone(results));
+
+        Ok(())
     }
 
     // Helper method to execute a single tool across all MCP clients
@@ -438,49 +435,51 @@ impl ClientBuilder {
             }
         }
 
+        // Convert our tools to the LLM crate's format
+        let llm_tools: Vec<Tool> = tools
+            .iter()
+            .filter_map(|tool| {
+                let name = tool.get("name")?.as_str()?.to_string();
+                let description = tool.get("description")?.as_str().unwrap_or("").to_string();
+                let input_schema = tool.get("input_schema")?;
+
+                Some(Tool {
+                    tool_type: "function".to_string(),
+                    function: FunctionTool {
+                        name,
+                        description,
+                        parameters: input_schema.clone(),
+                    },
+                })
+            })
+            .collect();
+
         log::info!("Added tools: {}", serde_json::to_string(&tools).unwrap());
 
-        let embedding_model_or_path = match self.embedding_model {
-            Some(embedding_model) => embedding_model,
-            None => {
-                let folder = dirs::cache_dir().expect("cache dir exists").join("dmcli");
+        let mut embeddings_builder = Embeddings::builder();
+        if let Some(model) = self.embedding_model {
+            embeddings_builder = embeddings_builder.with_embedding_model(model)
+        }
 
-                if !folder.exists() {
-                    std::fs::create_dir_all(&folder)?;
-                    std::fs::write(folder.join("tokenizer.json"), TOKENIZER_BYTES)?;
-                    std::fs::write(folder.join("model.safetensors"), MODEL_BYTES)?;
-                    std::fs::write(folder.join("config.json"), CONFIG_BYTES)?;
-                }
+        let (client_sender, client_receiver) = async_channel::unbounded::<ClientAction>();
 
-                folder.to_string_lossy().into_owned()
-            }
-        };
-
-        log::info!("Loading Model2Vec model: {embedding_model_or_path}");
-        let embedder = StaticModel::from_pretrained(
-            embedding_model_or_path,
-            None, // No HuggingFace token needed for public models
-            None, // Use default normalization from model config
-            None, // No subfolder
-        )
-        .map_err(|e| Error::Embedding(format!("{e}")))?;
-
-        let mut cache = CacheDB::new();
-        cache.create_collection(
-            "messages".into(),
-            embedder.encode_single("test").len(),
-            memvdb::Distance::Cosine,
-        )?;
-
-        let client = Client {
-            llm_client: Arc::new(llm_client),
-            tools,
+        let mut inner_client = InnerClient {
+            llm_client: Box::new(llm_client),
+            tools: llm_tools,
             mcp_clients: self.mcp_clients,
             event_sender: self.event_sender.expect("event_sender must be set"),
-            embedder,
-            cache,
-            recent_messages: Vec::new(),
+            client_receiver,
+            client_sender: client_sender.clone(),
+            embeddings: embeddings_builder.build()?,
         };
+
+        let _worker = tokio::spawn(async move {
+            if let Err(e) = inner_client.run_loop().await {
+                log::error!("Client error: {e}");
+            }
+        });
+
+        let client = Client { client_sender };
 
         Ok(client)
     }

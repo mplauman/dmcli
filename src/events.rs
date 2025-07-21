@@ -6,6 +6,7 @@ pub enum AppEvent {
     UserAgent(String),
     AiResponse(String),
     AiThinking(String, Vec<(String, String, serde_json::Value)>),
+    AiThinkingDone(Vec<(String, String, String)>),
     AiError(String),
     #[allow(dead_code)]
     CommandResult(String),

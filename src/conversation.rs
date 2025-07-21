@@ -1,5 +1,8 @@
 use std::time::{Duration, SystemTime};
 
+use llm::ToolCall;
+use serde_json::Value;
+
 /// A unique identifier for a message in a conversation
 ///
 /// # Fields
@@ -54,19 +57,41 @@ impl std::fmt::Display for Id {
 ///   - `id`: Unique identifier for this message
 ///   - `content`: Description of the error that occurred
 pub enum Message {
-    User { id: Id, content: String },
-    Assistant { id: Id, content: String },
-    Thinking { id: Id, content: String },
-    System { id: Id, content: String },
-    Error { id: Id, content: String },
+    User {
+        id: Id,
+        content: String,
+        tools: Option<Vec<ToolCall>>,
+    },
+    Assistant {
+        id: Id,
+        content: String,
+    },
+    Thinking {
+        id: Id,
+        content: String,
+        tools: Vec<(String, String, Value)>,
+    },
+    ThinkingDone {
+        id: Id,
+        tools: Vec<(String, String, String)>,
+    },
+    System {
+        id: Id,
+        content: String,
+    },
+    Error {
+        id: Id,
+        content: String,
+    },
 }
 
 impl std::fmt::Display for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Message::User { id, content } => write!(f, "user {id}: {content}"),
+            Message::User { id, content, .. } => write!(f, "user {id}: {content}"),
             Message::Assistant { id, content } => write!(f, "assistant {id}: {content}"),
-            Message::Thinking { id, content } => write!(f, "thinking {id}: {content}"),
+            Message::Thinking { id, content, .. } => write!(f, "thinking {id}: {content}"),
+            Message::ThinkingDone { id, .. } => write!(f, "thinking done {id}"),
             Message::System { id, content } => write!(f, "system {id}: {content}"),
             Message::Error { id, content } => write!(f, "error {id}: {content}"),
         }
@@ -103,6 +128,7 @@ impl Conversation {
         self.messages.push(Message::User {
             id: Id::new(self.id),
             content: content.into(),
+            tools: None,
         });
     }
 
@@ -120,10 +146,22 @@ impl Conversation {
         });
     }
 
-    pub fn thinking(&mut self, content: impl Into<String>) {
+    pub fn thinking(
+        &mut self,
+        content: impl Into<String>,
+        tools: impl IntoIterator<Item = (String, String, Value)>,
+    ) {
         self.messages.push(Message::Thinking {
             id: Id::new(self.id),
             content: content.into(),
+            tools: tools.into_iter().collect(),
+        });
+    }
+
+    pub fn thinking_done(&mut self, tools: impl IntoIterator<Item = (String, String, String)>) {
+        self.messages.push(Message::ThinkingDone {
+            id: Id::new(self.id),
+            tools: tools.into_iter().collect(),
         });
     }
 
@@ -164,6 +202,7 @@ mod tests {
                 Message::Assistant { content, .. } => content,
                 Message::System { content, .. } => content,
                 Message::Thinking { content, .. } => content,
+                Message::ThinkingDone { .. } => todo!("implement this"),
                 Message::Error { content, .. } => content,
             }
         }

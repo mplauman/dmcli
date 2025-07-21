@@ -163,26 +163,27 @@ impl Tui {
 
         let rendered_lines = conversation
             .into_iter()
-            .flat_map(|msg| {
+            .filter_map(|msg| {
                 let (style, id, content) = match msg {
-                    Message::User { id, content } => {
-                        (Style::default().fg(Color::Cyan), id, content)
+                    Message::User { id, content, .. } => {
+                        (Style::default().fg(Color::Cyan), id, Some(content))
                     }
                     Message::Assistant { id, content } => {
-                        (Style::default().fg(Color::Green), id, content)
+                        (Style::default().fg(Color::Green), id, Some(content))
                     }
                     Message::System { id, content } => {
-                        (Style::default().fg(Color::Yellow), id, content)
+                        (Style::default().fg(Color::Yellow), id, Some(content))
                     }
-                    Message::Thinking { id, content } => (
+                    Message::Thinking { id, content, .. } => (
                         Style::default()
                             .fg(Color::Magenta)
                             .add_modifier(Modifier::ITALIC),
                         id,
-                        content,
+                        Some(content),
                     ),
+                    Message::ThinkingDone { id, .. } => (Style::default(), id, None),
                     Message::Error { id, content } => {
-                        (Style::default().fg(Color::Red), id, content)
+                        (Style::default().fg(Color::Red), id, Some(content))
                     }
                 };
 
@@ -191,7 +192,7 @@ impl Tui {
                 } else {
                     let rendered_content = self
                         .markdown_renderer
-                        .render(content)
+                        .render(content?)
                         .lines()
                         .map(str::to_owned)
                         .collect::<Vec<_>>();
@@ -201,13 +202,16 @@ impl Tui {
                 };
 
                 // Split the rendered content into lines and apply styling
-                rendered_content
+                let rendered = rendered_content
                     .into_iter()
                     .map(|line| Line::from(vec![Span::styled(line, style)]))
                     .chain(std::iter::once(Line::from("")))
                     .rev()
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>();
+
+                Some(rendered)
             })
+            .flatten()
             .collect::<Vec<_>>();
 
         for line in rendered_lines {

@@ -11,6 +11,7 @@ use crate::input::InputHandler;
 mod anthropic;
 mod commands;
 mod conversation;
+mod embeddings;
 mod errors;
 mod events;
 mod input;
@@ -185,9 +186,12 @@ async fn main() -> Result<(), Error> {
                 tui.reset_scroll();
             }
             AppEvent::AiThinking(msg, tools) => {
-                conversation.thinking(format!("🤔 {msg}"));
+                conversation.thinking(format!("🤔 {msg}"), tools.clone());
                 tui.reset_scroll();
-                client.use_tools(tools).await?;
+            }
+            AppEvent::AiThinkingDone(tools) => {
+                conversation.thinking_done(tools);
+                tui.reset_scroll();
             }
             AppEvent::AiError(msg) => {
                 conversation.error(format!("❌ {msg}"));
