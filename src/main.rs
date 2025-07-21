@@ -155,12 +155,10 @@ async fn main() -> Result<(), Error> {
         match event {
             AppEvent::UserCommand(DmCommand::Exit {}) => {
                 conversation.system("Good bye!");
-                tui.reset_scroll();
                 break;
             }
             AppEvent::UserCommand(DmCommand::Reset {}) => {
                 conversation.system("Conversation reset (not really)");
-                tui.reset_scroll();
             }
             AppEvent::UserCommand(DmCommand::Roll { expressions }) => {
                 let result = caith::Roller::new(&expressions.join(" "))
@@ -186,23 +184,21 @@ async fn main() -> Result<(), Error> {
                 tui.reset_scroll();
             }
             AppEvent::AiThinking(msg, tools) => {
-                conversation.thinking(format!("🤔 {msg}"), tools.clone());
-                tui.reset_scroll();
+                conversation.thinking(format!("🤔 {msg}"), tools);
             }
             AppEvent::AiThinkingDone(tools) => {
                 conversation.thinking_done(tools);
-                tui.reset_scroll();
             }
             AppEvent::AiError(msg) => {
                 conversation.error(format!("❌ {msg}"));
                 tui.reset_scroll();
             }
             AppEvent::CommandResult(msg) => {
-                conversation.system(&msg);
+                conversation.system(msg);
                 tui.reset_scroll();
             }
             AppEvent::CommandError(msg) => {
-                conversation.error(&msg);
+                conversation.error(msg);
                 tui.reset_scroll();
             }
             AppEvent::InputUpdated { line, cursor } => {
