@@ -172,7 +172,7 @@ async fn main() -> Result<(), Error> {
                 if !line.is_empty() {
                     conversation.user(&line);
                     tui.reset_scroll();
-                    client.push(line)?;
+                    client.push(&conversation)?;
                 }
             }
             AppEvent::Exit => {

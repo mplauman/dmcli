@@ -1,3 +1,4 @@
+use crate::conversation::{Conversation, Message};
 use crate::embeddings::Embeddings;
 use crate::errors::Error;
 use crate::events::AppEvent;
@@ -74,12 +75,35 @@ impl Drop for Client {
 }
 
 impl Client {
-    pub fn push(&mut self, content: String) -> Result<(), Error> {
-        let messages = vec![ChatMessage {
-            role: ChatRole::User,
-            message_type: LlmMessageType::Text,
-            content,
-        }];
+    pub fn push(&mut self, conversation: &Conversation) -> Result<(), Error> {
+        let mut messages = conversation
+            .into_iter()
+            .filter_map(|msg| match msg {
+                Message::User { content, .. } => Some(ChatMessage {
+                    role: ChatRole::User,
+                    message_type: LlmMessageType::Text,
+                    content: content.clone(),
+                }),
+                Message::Assistant { content, .. } => Some(ChatMessage {
+                    role: ChatRole::Assistant,
+                    message_type: LlmMessageType::Text,
+                    content: content.clone(),
+                }),
+                Message::Thinking { content, tools, .. } => Some(ChatMessage {
+                    role: ChatRole::Assistant,
+                    message_type: LlmMessageType::ToolUse(to_tool_use(tools)),
+                    content: content.clone(),
+                }),
+                Message::ThinkingDone { tools, .. } => Some(ChatMessage {
+                    role: ChatRole::User,
+                    message_type: LlmMessageType::ToolResult(to_tool_result(tools)),
+                    content: String::new(),
+                }),
+                Message::System { .. } => None,
+                Message::Error { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        messages.reverse();
 
         self.client_sender
             .try_send(ClientAction::MakeRequest(messages))
@@ -87,6 +111,34 @@ impl Client {
 
         Ok(())
     }
+}
+
+fn to_tool_use(tools: &[(String, String, serde_json::Value)]) -> Vec<ToolCall> {
+    tools
+        .iter()
+        .map(|(id, name, parameters)| ToolCall {
+            id: id.clone(),
+            call_type: "function".into(),
+            function: FunctionCall {
+                name: name.clone(),
+                arguments: serde_json::to_string(parameters).expect("parameters can be serialized"),
+            },
+        })
+        .collect()
+}
+
+fn to_tool_result(results: &[(String, String, String)]) -> Vec<ToolCall> {
+    results
+        .iter()
+        .map(|(id, name, result)| ToolCall {
+            id: id.clone(),
+            call_type: "function".into(),
+            function: FunctionCall {
+                name: name.clone(),
+                arguments: result.clone(),
+            },
+        })
+        .collect()
 }
 
 struct InnerClient {

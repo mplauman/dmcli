@@ -1,6 +1,5 @@
 use std::time::{Duration, SystemTime};
 
-use llm::ToolCall;
 use serde_json::Value;
 
 /// A unique identifier for a message in a conversation
@@ -60,7 +59,6 @@ pub enum Message {
     User {
         id: Id,
         content: String,
-        tools: Option<Vec<ToolCall>>,
     },
     Assistant {
         id: Id,
@@ -128,7 +126,6 @@ impl Conversation {
         self.messages.push(Message::User {
             id: Id::new(self.id),
             content: content.into(),
-            tools: None,
         });
     }
 
