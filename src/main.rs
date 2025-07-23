@@ -11,7 +11,6 @@ use crate::input::InputHandler;
 mod anthropic;
 mod commands;
 mod conversation;
-mod embeddings;
 mod errors;
 mod events;
 mod input;
@@ -104,11 +103,6 @@ async fn create_client(
         builder = builder.with_model(model);
     }
 
-    if let Ok(embedding_model) = config.get_string("anthropic.embedding_model") {
-        log::info!("Overriding anthropic embedding model to {embedding_model}");
-        builder = builder.with_embedding_model(embedding_model);
-    }
-
     if let Ok(max_tokens) = config.get_int("anthropic.max_tokens") {
         log::info!("Overriding anthropic max tokens to {max_tokens}");
         builder = builder.with_max_tokens(max_tokens);
@@ -125,6 +119,17 @@ async fn create_client(
     builder.build().await
 }
 
+fn create_conversation(config: &Config) -> Result<Conversation, Error> {
+    let mut builder = Conversation::builder();
+
+    if let Ok(embedding_model) = config.get_string("anthropic.embedding_model") {
+        log::info!("Overriding embedding model to {embedding_model}");
+        builder = builder.with_embedding_model(embedding_model);
+    }
+
+    builder.build()
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
     let settings = load_settings()?;
@@ -135,7 +140,7 @@ async fn main() -> Result<(), Error> {
     let mut client = create_client(&settings, event_sender.clone()).await?;
     let mut tui = crate::tui::Tui::new(&settings, event_sender.clone())?;
 
-    let mut conversation = Conversation::default();
+    let mut conversation = create_conversation(&settings)?;
     let mut input_text = String::new();
     let mut input_cursor = usize::default();
 

@@ -1,5 +1,4 @@
 use crate::conversation::{Conversation, Message};
-use crate::embeddings::Embeddings;
 use crate::errors::Error;
 use crate::events::AppEvent;
 use futures::{FutureExt, future};
@@ -127,10 +126,10 @@ fn to_tool_use(tools: &[(String, String, serde_json::Value)]) -> Vec<ToolCall> {
         .collect()
 }
 
-fn to_tool_result(results: &[(String, String, String)]) -> Vec<ToolCall> {
+fn to_tool_result(results: &[(String, String, String, Vec<f32>)]) -> Vec<ToolCall> {
     results
         .iter()
-        .map(|(id, name, result)| ToolCall {
+        .map(|(id, name, result, _)| ToolCall {
             id: id.clone(),
             call_type: "function".into(),
             function: FunctionCall {
@@ -147,11 +146,10 @@ struct InnerClient {
     event_sender: async_channel::Sender<AppEvent>,
     client_sender: async_channel::Sender<ClientAction>,
     client_receiver: async_channel::Receiver<ClientAction>,
-    embeddings: Embeddings,
 }
 
 impl InnerClient {
-    async fn run_loop(&mut self) -> Result<(), Error> {
+    async fn run_loop(&self) -> Result<(), Error> {
         while let Ok(action) = self.client_receiver.recv().await {
             log::debug!("Got event, updating");
 
@@ -177,9 +175,7 @@ impl InnerClient {
         }
     }
 
-    async fn request(&mut self, messages: Vec<ChatMessage>) -> Result<(), Error> {
-        self.embeddings.embed(messages.clone())?;
-
+    async fn request(&self, messages: Vec<ChatMessage>) -> Result<(), Error> {
         let response = match self.llm_client.chat(&messages).await {
             Ok(response) => response,
             Err(e) => {
@@ -323,7 +319,6 @@ pub struct ClientBuilder {
     max_tokens: i64,
     mcp_clients: Vec<McpClient>,
     event_sender: Option<async_channel::Sender<AppEvent>>,
-    embedding_model: Option<String>,
 }
 
 impl Default for ClientBuilder {
@@ -334,7 +329,6 @@ impl Default for ClientBuilder {
             max_tokens: 8192,
             mcp_clients: Vec::default(),
             event_sender: None,
-            embedding_model: None,
         }
     }
 }
@@ -357,13 +351,6 @@ impl ClientBuilder {
     pub fn with_event_sender(self, event_sender: async_channel::Sender<AppEvent>) -> Self {
         Self {
             event_sender: Some(event_sender),
-            ..self
-        }
-    }
-
-    pub fn with_embedding_model(self, embedding_model: String) -> Self {
-        Self {
-            embedding_model: Some(embedding_model),
             ..self
         }
     }
@@ -444,20 +431,14 @@ impl ClientBuilder {
 
         log::info!("Added tools: {}", serde_json::to_string(&tools).unwrap());
 
-        let mut embeddings_builder = Embeddings::builder();
-        if let Some(model) = self.embedding_model {
-            embeddings_builder = embeddings_builder.with_embedding_model(model)
-        }
-
         let (client_sender, client_receiver) = async_channel::unbounded::<ClientAction>();
 
-        let mut inner_client = InnerClient {
+        let inner_client = InnerClient {
             llm_client: Box::new(llm_client),
             mcp_clients: self.mcp_clients,
             event_sender: self.event_sender.expect("event_sender must be set"),
             client_receiver,
             client_sender: client_sender.clone(),
-            embeddings: embeddings_builder.build()?,
         };
 
         let _worker = tokio::spawn(async move {

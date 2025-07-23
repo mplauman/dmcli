@@ -168,7 +168,7 @@ impl Tui {
                     Message::User { id, content, .. } => {
                         (Style::default().fg(Color::Cyan), id, Some(content))
                     }
-                    Message::Assistant { id, content } => {
+                    Message::Assistant { id, content, .. } => {
                         (Style::default().fg(Color::Green), id, Some(content))
                     }
                     Message::System { id, content } => {

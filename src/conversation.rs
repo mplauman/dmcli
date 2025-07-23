@@ -1,6 +1,11 @@
+use crate::errors::Error;
+use model2vec_rs::model::StaticModel;
 use std::time::{Duration, SystemTime};
 
 use serde_json::Value;
+
+// Include the generated constants from the build script
+include!(concat!(env!("OUT_DIR"), "/model_constants.rs"));
 
 /// A unique identifier for a message in a conversation
 ///
@@ -59,10 +64,12 @@ pub enum Message {
     User {
         id: Id,
         content: String,
+        encoding: Vec<f32>,
     },
     Assistant {
         id: Id,
         content: String,
+        encoding: Vec<f32>,
     },
     Thinking {
         id: Id,
@@ -71,7 +78,7 @@ pub enum Message {
     },
     ThinkingDone {
         id: Id,
-        tools: Vec<(String, String, String)>,
+        tools: Vec<(String, String, String, Vec<f32>)>,
     },
     System {
         id: Id,
@@ -87,7 +94,7 @@ impl std::fmt::Display for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Message::User { id, content, .. } => write!(f, "user {id}: {content}"),
-            Message::Assistant { id, content } => write!(f, "assistant {id}: {content}"),
+            Message::Assistant { id, content, .. } => write!(f, "assistant {id}: {content}"),
             Message::Thinking { id, content, .. } => write!(f, "thinking {id}: {content}"),
             Message::ThinkingDone { id, .. } => write!(f, "thinking done {id}"),
             Message::System { id, content } => write!(f, "system {id}: {content}"),
@@ -119,20 +126,33 @@ impl std::fmt::Display for Message {
 pub struct Conversation {
     id: SystemTime,
     messages: Vec<Message>,
+    embedder: StaticModel,
 }
 
 impl Conversation {
+    pub fn builder() -> ConversationBuilder {
+        ConversationBuilder::default()
+    }
+
     pub fn user(&mut self, content: impl Into<String>) {
+        let content = content.into();
+        let encoding = self.encode(&content);
+
         self.messages.push(Message::User {
             id: Id::new(self.id),
-            content: content.into(),
+            content,
+            encoding,
         });
     }
 
     pub fn assistant(&mut self, content: impl Into<String>) {
+        let content = content.into();
+        let encoding = self.encode(&content);
+
         self.messages.push(Message::Assistant {
             id: Id::new(self.id),
-            content: content.into(),
+            content,
+            encoding,
         });
     }
 
@@ -158,7 +178,15 @@ impl Conversation {
     pub fn thinking_done(&mut self, tools: impl IntoIterator<Item = (String, String, String)>) {
         self.messages.push(Message::ThinkingDone {
             id: Id::new(self.id),
-            tools: tools.into_iter().collect(),
+            tools: tools
+                .into_iter()
+                .map(|t| {
+                    let content = t.2;
+                    let encoding = self.encode(&content);
+
+                    (t.0, t.1, content, encoding)
+                })
+                .collect(),
         });
     }
 
@@ -168,14 +196,9 @@ impl Conversation {
             content: content.into(),
         });
     }
-}
 
-impl Default for Conversation {
-    fn default() -> Self {
-        Self {
-            id: SystemTime::now(),
-            messages: Vec::new(),
-        }
+    fn encode(&self, content: &str) -> Vec<f32> {
+        self.embedder.encode_single(content)
     }
 }
 
@@ -207,7 +230,7 @@ mod tests {
 
     #[test]
     fn test_into_iterator_implementation() {
-        let mut conversation = Conversation::default();
+        let mut conversation = ConversationBuilder::default().build().unwrap();
         conversation.user("Hello");
         conversation.assistant("Hi there!");
         conversation.system("Connection established");
@@ -222,5 +245,50 @@ mod tests {
         // Test that we can iterate multiple times
         let count = (&conversation).into_iter().count();
         assert_eq!(count, 3);
+    }
+}
+
+#[derive(Default)]
+pub struct ConversationBuilder {
+    embedding_model: Option<String>,
+}
+
+impl ConversationBuilder {
+    pub fn with_embedding_model(self, model: String) -> Self {
+        let embedding_model = Some(model);
+        Self { embedding_model }
+    }
+
+    pub fn build(self) -> Result<Conversation, Error> {
+        let embedding_model_or_path = match self.embedding_model {
+            Some(embedding_model) => embedding_model,
+            None => {
+                let folder = dirs::cache_dir().expect("cache dir exists").join("dmcli");
+
+                if !folder.exists() {
+                    std::fs::create_dir_all(&folder)?;
+                    std::fs::write(folder.join("tokenizer.json"), TOKENIZER_BYTES)?;
+                    std::fs::write(folder.join("model.safetensors"), MODEL_BYTES)?;
+                    std::fs::write(folder.join("config.json"), CONFIG_BYTES)?;
+                }
+
+                folder.to_string_lossy().into_owned()
+            }
+        };
+
+        log::info!("Loading Model2Vec model: {embedding_model_or_path}");
+        let embedder = StaticModel::from_pretrained(
+            embedding_model_or_path,
+            None, // No HuggingFace token needed for public models
+            None, // Use default normalization from model config
+            None, // No subfolder
+        )
+        .map_err(|e| Error::Embedding(format!("{e}")))?;
+
+        Ok(Conversation {
+            id: SystemTime::now(),
+            messages: Vec::new(),
+            embedder,
+        })
     }
 }
