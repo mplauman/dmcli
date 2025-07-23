@@ -75,33 +75,74 @@ impl Drop for Client {
 
 impl Client {
     pub fn push(&mut self, conversation: &Conversation) -> Result<(), Error> {
-        let mut messages = conversation
-            .into_iter()
-            .filter_map(|msg| match msg {
-                Message::User { content, .. } => Some(ChatMessage {
+        // Capacity: 5 desired, plus maybe 1 for tool use, plus related, plus a summary
+        let mut messages = Vec::with_capacity(8);
+
+        for message in conversation {
+            let message = match message {
+                Message::User { content, .. } => ChatMessage {
                     role: ChatRole::User,
                     message_type: LlmMessageType::Text,
                     content: content.clone(),
-                }),
-                Message::Assistant { content, .. } => Some(ChatMessage {
+                },
+                Message::Assistant { content, .. } => ChatMessage {
                     role: ChatRole::Assistant,
                     message_type: LlmMessageType::Text,
                     content: content.clone(),
-                }),
-                Message::Thinking { content, tools, .. } => Some(ChatMessage {
+                },
+                Message::Thinking { content, tools, .. } => ChatMessage {
                     role: ChatRole::Assistant,
                     message_type: LlmMessageType::ToolUse(to_tool_use(tools)),
                     content: content.clone(),
-                }),
-                Message::ThinkingDone { tools, .. } => Some(ChatMessage {
+                },
+                Message::ThinkingDone { tools, .. } => ChatMessage {
                     role: ChatRole::User,
                     message_type: LlmMessageType::ToolResult(to_tool_result(tools)),
                     content: String::new(),
-                }),
-                Message::System { .. } => None,
-                Message::Error { .. } => None,
-            })
-            .collect::<Vec<_>>();
+                },
+                Message::System { .. } => continue,
+                Message::Error { .. } => continue,
+            };
+
+            let done = match message.message_type {
+                LlmMessageType::ToolResult { .. } => false,
+                _ => messages.len() >= 4,
+            };
+
+            messages.push(message);
+
+            if done {
+                break;
+            }
+        }
+
+        let related = if let Some(Message::User { content, .. }) = conversation.into_iter().next() {
+            let related = conversation
+                .related(messages.len(), content, 10)
+                .into_iter()
+                .map(|msg| match msg {
+                    Message::User { content, .. } => format!("- user: {content}"),
+                    Message::Assistant { content, .. } => format!(" - assistant: {content}"),
+                    Message::ThinkingDone { tools, .. } => format!(" - tool: {}", tools[0].2),
+                    _ => panic!("Unexpected message type included in 'related' messages"),
+                })
+                .filter(|c| c != content) // Skip exact matches
+                .collect::<Vec<String>>();
+
+            ChatMessage {
+                role: ChatRole::User,
+                message_type: LlmMessageType::Text,
+                content: format!(
+                    "Here is some data related to the latest message:\n{}",
+                    related.join("\n")
+                ),
+            }
+        } else {
+            log::info!("Skipping conversation; latest message is not from user");
+            return Ok(());
+        };
+        messages.push(related);
+
         messages.reverse();
 
         self.client_sender

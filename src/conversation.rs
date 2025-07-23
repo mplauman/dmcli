@@ -200,7 +200,99 @@ impl Conversation {
     fn encode(&self, content: &str) -> Vec<f32> {
         self.embedder.encode_single(content)
     }
+
+    pub fn related(&self, skip: usize, content: &str, max: usize) -> Vec<Message> {
+        let target = self.encode(content);
+
+        let mut heap = std::collections::BinaryHeap::new();
+
+        for message in self.into_iter().skip(skip) {
+            let distances = match message {
+                Message::User { encoding, .. } => vec![distance(&target, encoding)],
+                Message::Assistant { encoding, .. } => vec![distance(&target, encoding)],
+                Message::Thinking { .. } => continue,
+                Message::ThinkingDone { tools, .. } => {
+                    tools.iter().map(|t| distance(&target, &t.3)).collect()
+                }
+                Message::System { .. } => continue,
+                Message::Error { .. } => continue,
+            };
+
+            for (i, distance) in distances.into_iter().enumerate() {
+                let message = match message {
+                    Message::User {
+                        id,
+                        content,
+                        encoding,
+                    } => Message::User {
+                        id: id.clone(),
+                        content: content.clone(),
+                        encoding: encoding.clone(),
+                    },
+                    Message::Assistant {
+                        id,
+                        content,
+                        encoding,
+                    } => Message::Assistant {
+                        id: id.clone(),
+                        content: content.clone(),
+                        encoding: encoding.clone(),
+                    },
+                    Message::Thinking { .. } => panic!("should not be ranked"),
+                    Message::ThinkingDone { id, tools } => Message::ThinkingDone {
+                        id: id.clone(),
+                        tools: vec![tools[i].clone()],
+                    },
+                    Message::System { .. } => panic!("should not be ranked"),
+                    Message::Error { .. } => panic!("should not be ranked"),
+                };
+
+                heap.push(RankedMessage { message, distance });
+            }
+
+            while heap.len() > max {
+                heap.pop();
+            }
+        }
+
+        heap.into_iter()
+            .map(|r| r.message)
+            .collect::<Vec<Message>>()
+    }
 }
+
+fn distance(a: &[f32], b: &[f32]) -> f32 {
+    // For normalized vectors, cosine similarity is just the dot product
+    let dot_product: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+
+    // Convert similarity to distance (1 - similarity)
+    1.0 - dot_product
+}
+
+struct RankedMessage {
+    message: Message,
+    distance: f32,
+}
+
+impl Ord for RankedMessage {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.distance.partial_cmp(&other.distance).unwrap()
+    }
+}
+
+impl PartialOrd for RankedMessage {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for RankedMessage {
+    fn eq(&self, other: &Self) -> bool {
+        self.distance == other.distance
+    }
+}
+
+impl Eq for RankedMessage {}
 
 impl<'a> IntoIterator for &'a Conversation {
     type Item = &'a Message;
@@ -216,14 +308,21 @@ mod tests {
     use super::*;
 
     impl Message {
-        fn content(&self) -> &str {
+        fn content(&self) -> String {
             match self {
-                Message::User { content, .. } => content,
-                Message::Assistant { content, .. } => content,
-                Message::System { content, .. } => content,
-                Message::Thinking { content, .. } => content,
-                Message::ThinkingDone { .. } => todo!("implement this"),
-                Message::Error { content, .. } => content,
+                Message::User { content, .. } => content.clone(),
+                Message::Assistant { content, .. } => content.clone(),
+                Message::System { content, .. } => content.clone(),
+                Message::Thinking { content, .. } => content.clone(),
+                Message::ThinkingDone { tools, .. } => {
+                    // For testing purposes, return a summary of tool outputs
+                    tools
+                        .iter()
+                        .map(|(_, _, content, _)| content.as_str())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                }
+                Message::Error { content, .. } => content.clone(),
             }
         }
     }
@@ -245,6 +344,155 @@ mod tests {
         // Test that we can iterate multiple times
         let count = (&conversation).into_iter().count();
         assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn test_related_empty_conversation() {
+        let conversation = ConversationBuilder::default().build().unwrap();
+        let related = conversation.related(0, "test query", 5);
+        assert_eq!(related.len(), 0);
+    }
+
+    #[test]
+    fn test_related_max_zero() {
+        let mut conversation = ConversationBuilder::default().build().unwrap();
+        conversation.user("Hello world");
+        conversation.assistant("Hi there");
+
+        let related = conversation.related(0, "greeting", 0);
+        assert_eq!(related.len(), 0);
+    }
+
+    #[test]
+    fn test_related_respects_max_limit() {
+        let mut conversation = ConversationBuilder::default().build().unwrap();
+        conversation.user("First message");
+        conversation.assistant("First response");
+        conversation.user("Second message");
+        conversation.assistant("Second response");
+        conversation.user("Third message");
+
+        let related = conversation.related(0, "message", 3);
+        assert!(related.len() <= 3);
+
+        let related = conversation.related(0, "message", 2);
+        assert!(related.len() <= 2);
+    }
+
+    #[test]
+    fn test_related_only_includes_rankable_messages() {
+        let mut conversation = ConversationBuilder::default().build().unwrap();
+        conversation.user("User message");
+        conversation.assistant("Assistant message");
+        conversation.system("System message");
+        conversation.error("Error message");
+        conversation.thinking("Thinking content", vec![]);
+
+        let related = conversation.related(0, "message", 10);
+
+        // Should only include User and Assistant messages (2 total)
+        // System, Error, and Thinking messages should be excluded
+        assert_eq!(related.len(), 2);
+
+        for message in related {
+            match message {
+                Message::User { .. } | Message::Assistant { .. } => {}
+                _ => panic!("Only User and Assistant messages should be returned"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_related_includes_thinking_done_tools() {
+        let mut conversation = ConversationBuilder::default().build().unwrap();
+        conversation.user("User message");
+        conversation.thinking_done(vec![
+            (
+                "tool1".to_string(),
+                "name1".to_string(),
+                "Tool output 1".to_string(),
+            ),
+            (
+                "tool2".to_string(),
+                "name2".to_string(),
+                "Tool output 2".to_string(),
+            ),
+        ]);
+
+        let related = conversation.related(0, "tool output", 10);
+
+        // Should include the user message plus potentially both tool outputs
+        assert!(!related.is_empty());
+        assert!(related.len() <= 3); // 1 user + 2 possible tool outputs
+
+        // Check that we can get ThinkingDone messages
+        let has_thinking_done = related
+            .iter()
+            .any(|m| matches!(m, Message::ThinkingDone { .. }));
+        assert!(has_thinking_done);
+    }
+
+    #[test]
+    fn test_related_message_content_preserved() {
+        let mut conversation = ConversationBuilder::default().build().unwrap();
+        let user_content = "Hello world";
+        let assistant_content = "Hi there friend";
+
+        conversation.user(user_content);
+        conversation.assistant(assistant_content);
+
+        let related = conversation.related(0, "hello", 10);
+
+        assert_eq!(related.len(), 2);
+
+        // Check that the content is preserved correctly
+        let contents: Vec<String> = related.iter().map(|m| m.content()).collect();
+        assert!(contents.contains(&user_content.to_string()));
+        assert!(contents.contains(&assistant_content.to_string()));
+    }
+
+    #[test]
+    fn test_related_different_similarities() {
+        let mut conversation = ConversationBuilder::default().build().unwrap();
+
+        // Add messages with different expected similarities to "cat"
+        conversation.user("I love cats and dogs"); // Should be most similar
+        conversation.assistant("The weather is nice today"); // Should be least similar
+        conversation.user("My cat is very fluffy"); // Should be very similar
+
+        let related = conversation.related(0, "cat", 10);
+        assert_eq!(related.len(), 3);
+
+        // This depends on the model, but searching for the top two messages with
+        // `cat` should only include the messages with cat in them.
+        let related = conversation.related(0, "cat", 2);
+        assert_eq!(
+            related
+                .into_iter()
+                .filter(|m| m.content().contains("cat"))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn test_related_preserves_message_ids() {
+        let mut conversation = ConversationBuilder::default().build().unwrap();
+        conversation.user("First message");
+        conversation.assistant("Response");
+
+        let related = conversation.related(0, "message", 10);
+
+        // Each message should have a valid ID
+        for message in related {
+            let id = match message {
+                Message::User { id, .. } | Message::Assistant { id, .. } => id,
+                _ => panic!("Unexpected message type"),
+            };
+
+            // IDs should have the same conversation timestamp
+            assert_eq!(id.conversation, conversation.id);
+        }
     }
 }
 
@@ -279,9 +527,9 @@ impl ConversationBuilder {
         log::info!("Loading Model2Vec model: {embedding_model_or_path}");
         let embedder = StaticModel::from_pretrained(
             embedding_model_or_path,
-            None, // No HuggingFace token needed for public models
-            None, // Use default normalization from model config
-            None, // No subfolder
+            None,       // No HuggingFace token needed for public models
+            Some(true), // Ensure normalized for ranking
+            None,       // No subfolder
         )
         .map_err(|e| Error::Embedding(format!("{e}")))?;
 
