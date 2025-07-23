@@ -686,7 +686,6 @@ dependencies = [
  "ignore",
  "llm",
  "log",
- "memvdb",
  "model2vec-rs",
  "opentelemetry-appender-log",
  "opentelemetry-otlp",
@@ -1523,20 +1522,6 @@ name = "memchr"
 version = "2.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "78ca9ab1a0babb1e7d5695e3530886289c18cf2f87ec19a575a0abdce112e3a3"
-
-[[package]]
-name = "memvdb"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17ac0bc5c82cef777196785efd44dccbdc3708672a5f6de90c568f7e2cad4c9e"
-dependencies = [
- "anyhow",
- "log",
- "rayon",
- "serde",
- "serde_json",
- "thiserror",
-]
 
 [[package]]
 name = "mime"

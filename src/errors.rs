@@ -10,7 +10,6 @@ pub enum Error {
     Http(reqwest::Error),
     McpServer(rmcp_in_process_transport::in_process::InProcessTransportError),
     Embedding(String),
-    Database(memvdb::Error),
 }
 
 impl std::fmt::Display for Error {
@@ -46,14 +45,7 @@ impl std::fmt::Display for Error {
             Self::Http(e) => write!(f, "HTTP error: {e}"),
             Self::McpServer(e) => write!(f, "{e}"),
             Self::Embedding(e) => write!(f, "{e}"),
-            Self::Database(e) => write!(f, "{e}"),
         }
-    }
-}
-
-impl From<memvdb::Error> for Error {
-    fn from(error: memvdb::Error) -> Self {
-        Self::Database(error)
     }
 }
 
@@ -153,7 +145,6 @@ impl From<Error> for rmcp::Error {
             Error::Http(e) => rmcp::Error::internal_error(format!("HTTP error: {e}"), None),
             Error::McpServer(e) => panic!("{e}"),
             Error::Embedding(e) => panic!("{e}"),
-            Error::Database(e) => panic!("{e}"),
         }
     }
 }
