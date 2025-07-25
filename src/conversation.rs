@@ -329,7 +329,11 @@ mod tests {
 
     #[test]
     fn test_into_iterator_implementation() {
-        let mut conversation = ConversationBuilder::default().build().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut conversation = ConversationBuilder::default()
+            .with_cache_dir(temp_dir.path())
+            .build()
+            .unwrap();
         conversation.user("Hello");
         conversation.assistant("Hi there!");
         conversation.system("Connection established");
@@ -348,14 +352,22 @@ mod tests {
 
     #[test]
     fn test_related_empty_conversation() {
-        let conversation = ConversationBuilder::default().build().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let conversation = ConversationBuilder::default()
+            .with_cache_dir(temp_dir.path())
+            .build()
+            .unwrap();
         let related = conversation.related(0, "test query", 5);
         assert_eq!(related.len(), 0);
     }
 
     #[test]
     fn test_related_max_zero() {
-        let mut conversation = ConversationBuilder::default().build().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut conversation = ConversationBuilder::default()
+            .with_cache_dir(temp_dir.path())
+            .build()
+            .unwrap();
         conversation.user("Hello world");
         conversation.assistant("Hi there");
 
@@ -365,7 +377,11 @@ mod tests {
 
     #[test]
     fn test_related_respects_max_limit() {
-        let mut conversation = ConversationBuilder::default().build().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut conversation = ConversationBuilder::default()
+            .with_cache_dir(temp_dir.path())
+            .build()
+            .unwrap();
         conversation.user("First message");
         conversation.assistant("First response");
         conversation.user("Second message");
@@ -381,7 +397,11 @@ mod tests {
 
     #[test]
     fn test_related_only_includes_rankable_messages() {
-        let mut conversation = ConversationBuilder::default().build().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut conversation = ConversationBuilder::default()
+            .with_cache_dir(temp_dir.path())
+            .build()
+            .unwrap();
         conversation.user("User message");
         conversation.assistant("Assistant message");
         conversation.system("System message");
@@ -404,7 +424,11 @@ mod tests {
 
     #[test]
     fn test_related_includes_thinking_done_tools() {
-        let mut conversation = ConversationBuilder::default().build().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut conversation = ConversationBuilder::default()
+            .with_cache_dir(temp_dir.path())
+            .build()
+            .unwrap();
         conversation.user("User message");
         conversation.thinking_done(vec![
             (
@@ -434,7 +458,11 @@ mod tests {
 
     #[test]
     fn test_related_message_content_preserved() {
-        let mut conversation = ConversationBuilder::default().build().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut conversation = ConversationBuilder::default()
+            .with_cache_dir(temp_dir.path())
+            .build()
+            .unwrap();
         let user_content = "Hello world";
         let assistant_content = "Hi there friend";
 
@@ -453,7 +481,11 @@ mod tests {
 
     #[test]
     fn test_related_different_similarities() {
-        let mut conversation = ConversationBuilder::default().build().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut conversation = ConversationBuilder::default()
+            .with_cache_dir(temp_dir.path())
+            .build()
+            .unwrap();
 
         // Add messages with different expected similarities to "cat"
         conversation.user("I love cats and dogs"); // Should be most similar
@@ -477,7 +509,11 @@ mod tests {
 
     #[test]
     fn test_related_preserves_message_ids() {
-        let mut conversation = ConversationBuilder::default().build().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut conversation = ConversationBuilder::default()
+            .with_cache_dir(temp_dir.path())
+            .build()
+            .unwrap();
         conversation.user("First message");
         conversation.assistant("Response");
 
@@ -494,30 +530,104 @@ mod tests {
             assert_eq!(id.conversation, conversation.id);
         }
     }
+
+    #[test]
+    fn test_cache_directory_configuration() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cache_path = temp_dir.path();
+
+        // Verify the cache directory is empty initially
+        assert!(!cache_path.join("tokenizer.json").exists());
+        assert!(!cache_path.join("model.safetensors").exists());
+        assert!(!cache_path.join("config.json").exists());
+
+        // Build conversation with custom cache directory
+        let _conversation = ConversationBuilder::default()
+            .with_cache_dir(cache_path)
+            .build()
+            .unwrap();
+
+        // Verify model files were created in the specified cache directory
+        assert!(cache_path.join("tokenizer.json").exists());
+        assert!(cache_path.join("model.safetensors").exists());
+        assert!(cache_path.join("config.json").exists());
+
+        // Verify files have content
+        let tokenizer_content = std::fs::read(cache_path.join("tokenizer.json")).unwrap();
+        let model_content = std::fs::read(cache_path.join("model.safetensors")).unwrap();
+        let config_content = std::fs::read(cache_path.join("config.json")).unwrap();
+
+        assert!(!tokenizer_content.is_empty());
+        assert!(!model_content.is_empty());
+        assert!(!config_content.is_empty());
+    }
 }
 
 #[derive(Default)]
 pub struct ConversationBuilder {
     embedding_model: Option<String>,
+    cache_dir: Option<std::path::PathBuf>,
 }
 
 impl ConversationBuilder {
     pub fn with_embedding_model(self, model: String) -> Self {
-        let embedding_model = Some(model);
-        Self { embedding_model }
+        Self {
+            embedding_model: Some(model),
+            ..self
+        }
+    }
+
+    /// Sets the cache directory for storing embedding model files.
+    ///
+    /// When a cache directory is specified, the embedding model files (tokenizer.json,
+    /// model.safetensors, and config.json) will be stored in or loaded from this directory.
+    /// If the files don't exist, they will be created automatically.
+    ///
+    /// # Arguments
+    ///
+    /// * `cache_dir` - Path to the directory where model files should be cached
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use std::path::Path;
+    /// let conversation = ConversationBuilder::default()
+    ///     .with_cache_dir("/tmp/my_cache")
+    ///     .build()
+    ///     .unwrap();
+    /// ```
+    pub fn with_cache_dir<P: Into<std::path::PathBuf>>(self, cache_dir: P) -> Self {
+        Self {
+            cache_dir: Some(cache_dir.into()),
+            ..self
+        }
     }
 
     pub fn build(self) -> Result<Conversation, Error> {
         let embedding_model_or_path = match self.embedding_model {
             Some(embedding_model) => embedding_model,
             None => {
-                let folder = dirs::cache_dir().expect("cache dir exists").join("dmcli");
+                let folder = self
+                    .cache_dir
+                    .unwrap_or_else(|| dirs::cache_dir().expect("cache dir exists").join("dmcli"));
 
                 if !folder.exists() {
                     std::fs::create_dir_all(&folder)?;
-                    std::fs::write(folder.join("tokenizer.json"), TOKENIZER_BYTES)?;
-                    std::fs::write(folder.join("model.safetensors"), MODEL_BYTES)?;
-                    std::fs::write(folder.join("config.json"), CONFIG_BYTES)?;
+                }
+
+                // Always ensure model files exist in the cache directory
+                let tokenizer_path = folder.join("tokenizer.json");
+                let model_path = folder.join("model.safetensors");
+                let config_path = folder.join("config.json");
+
+                if !tokenizer_path.exists() {
+                    std::fs::write(&tokenizer_path, TOKENIZER_BYTES)?;
+                }
+                if !model_path.exists() {
+                    std::fs::write(&model_path, MODEL_BYTES)?;
+                }
+                if !config_path.exists() {
+                    std::fs::write(&config_path, CONFIG_BYTES)?;
                 }
 
                 folder.to_string_lossy().into_owned()
