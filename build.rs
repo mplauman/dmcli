@@ -46,9 +46,9 @@ fn main() -> std::io::Result<()> {
     // Generate constants for the embedded file paths
     let constants_code = format!(
         r#"
-pub const TOKENIZER_BYTES: &[u8] = include_bytes!("{}");
-pub const MODEL_BYTES: &[u8] = include_bytes!("{}");
-pub const CONFIG_BYTES: &[u8] = include_bytes!("{}");
+pub const TOKENIZER_BYTES: &[u8] = include_bytes!(r"{}");
+pub const MODEL_BYTES: &[u8] = include_bytes!(r"{}");
+pub const CONFIG_BYTES: &[u8] = include_bytes!(r"{}");
 "#,
         tokenizer_path.display(),
         model_path.display(),
