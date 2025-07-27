@@ -3,12 +3,14 @@ use config::Config;
 
 use crate::anthropic::Client;
 use crate::commands::DmCommand;
+use crate::conversation::Conversation;
 use crate::errors::Error;
 use crate::events::AppEvent;
 use crate::input::InputHandler;
 
 mod anthropic;
 mod commands;
+mod conversation;
 mod errors;
 mod events;
 mod input;
@@ -106,21 +108,26 @@ async fn create_client(
         builder = builder.with_max_tokens(max_tokens);
     }
 
-    if let Ok(window_size) = config.get_int("anthropic.window_size").map(usize::try_from) {
-        let window_size = window_size.expect("window_size must be >= 0");
-        log::info!("Overriding anthropic window size to {window_size}");
-        builder = builder.with_window_size(window_size);
-    }
-
     if let Ok(obsidian_vault) = config.get_string("local.obsidian_vault") {
         log::info!("Adding tools for obsidian vault located at {obsidian_vault}");
 
         let obsidian = crate::obsidian::Obsidian::new(obsidian_vault.into());
 
-        builder = builder.with_toolkit(obsidian).await;
+        builder = builder.with_toolkit(obsidian).await?;
     };
 
     builder.build().await
+}
+
+fn create_conversation(config: &Config) -> Result<Conversation, Error> {
+    let mut builder = Conversation::builder();
+
+    if let Ok(embedding_model) = config.get_string("anthropic.embedding_model") {
+        log::info!("Overriding embedding model to {embedding_model}");
+        builder = builder.with_embedding_model(embedding_model);
+    }
+
+    builder.build()
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -133,6 +140,10 @@ async fn main() -> Result<(), Error> {
     let mut client = create_client(&settings, event_sender.clone()).await?;
     let mut tui = crate::tui::Tui::new(&settings, event_sender.clone())?;
 
+    let mut conversation = create_conversation(&settings)?;
+    let mut input_text = String::new();
+    let mut input_cursor = usize::default();
+
     tokio::spawn(async move {
         loop {
             input_handler.read_input().await;
@@ -140,57 +151,63 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    tui.render()?;
+    conversation.system("Welcome to dmcli! Type your message and press Enter to send. Send 'roll 2d6' to roll a dice or 'exit' to quit.");
+
+    tui.render(&conversation, &input_text, input_cursor)?;
     while let Ok(event) = event_receiver.recv().await {
         log::debug!("Got event, updating");
 
         match event {
             AppEvent::UserCommand(DmCommand::Exit {}) => {
-                tui.add_message("Good bye!".to_string(), crate::tui::MessageType::System);
+                conversation.system("Good bye!");
                 break;
             }
             AppEvent::UserCommand(DmCommand::Reset {}) => {
-                tui.add_message(
-                    "Conversation reset (not really)".to_string(),
-                    crate::tui::MessageType::System,
-                );
+                conversation.system("Conversation reset (not really)");
             }
             AppEvent::UserCommand(DmCommand::Roll { expressions }) => {
                 let result = caith::Roller::new(&expressions.join(" "))
                     .unwrap()
                     .roll()
                     .unwrap();
-                tui.add_message(format!("🎲 {result}"), crate::tui::MessageType::System);
+                conversation.system(format!("🎲 {result}"));
+                tui.reset_scroll();
             }
             AppEvent::UserAgent(line) => {
                 if !line.is_empty() {
-                    tui.add_message(line.clone(), crate::tui::MessageType::User);
-                    client.push(line)?;
+                    conversation.user(&line);
+                    tui.reset_scroll();
+                    client.push(&conversation)?;
                 }
             }
             AppEvent::Exit => {
                 log::debug!("Exit event received, exiting");
                 break;
             }
-            AppEvent::AiResponse(msg) => tui.add_message(msg, crate::tui::MessageType::Assistant),
+            AppEvent::AiResponse(msg) => {
+                conversation.assistant(&msg);
+                tui.reset_scroll();
+            }
             AppEvent::AiThinking(msg, tools) => {
-                tui.add_message(format!("🤔 {msg}"), crate::tui::MessageType::Thinking);
-                client.use_tools(tools).await?;
+                conversation.thinking(format!("🤔 {msg}"), tools);
+            }
+            AppEvent::AiThinkingDone(tools) => {
+                conversation.thinking_done(tools);
             }
             AppEvent::AiError(msg) => {
-                tui.add_message(format!("❌ {msg}"), crate::tui::MessageType::Error)
+                conversation.error(format!("❌ {msg}"));
+                tui.reset_scroll();
             }
-            AppEvent::CommandResult(msg) => tui.add_message(msg, crate::tui::MessageType::System),
-            AppEvent::CommandError(msg) => {
-                tui.add_message(format!("Error: {msg}"), crate::tui::MessageType::Error)
+            AppEvent::InputUpdated { line, cursor } => {
+                input_text = line.clone();
+                input_cursor = cursor;
             }
-            AppEvent::InputUpdated { line, cursor } => tui.input_updated(line, cursor),
             AppEvent::WindowResized { width, height } => tui.resized(width, height),
             AppEvent::ScrollBack => tui.handle_scroll_back(),
             AppEvent::ScrollForward => tui.handle_scroll_forward(),
         }
 
-        tui.render()?
+        tui.render(&conversation, &input_text, input_cursor)?
     }
 
     log::info!("Exiting cleanly");

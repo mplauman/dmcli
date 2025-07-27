@@ -8,6 +8,8 @@ pub enum Error {
     JsonDeserialization(usize, usize, serde_json::error::Category),
     InvalidVaultPath(String),
     Http(reqwest::Error),
+    McpServer(rmcp_in_process_transport::in_process::InProcessTransportError),
+    Embedding(String),
 }
 
 impl std::fmt::Display for Error {
@@ -41,6 +43,8 @@ impl std::fmt::Display for Error {
                 "Invalid vault path '{path}': paths must be relative to the vault root, not absolute"
             ),
             Self::Http(e) => write!(f, "HTTP error: {e}"),
+            Self::McpServer(e) => write!(f, "{e}"),
+            Self::Embedding(e) => write!(f, "{e}"),
         }
     }
 }
@@ -60,6 +64,12 @@ impl From<config::ConfigError> for Error {
 impl From<reqwest::Error> for Error {
     fn from(error: reqwest::Error) -> Self {
         Self::Http(error)
+    }
+}
+
+impl From<rmcp_in_process_transport::in_process::InProcessTransportError> for Error {
+    fn from(error: rmcp_in_process_transport::in_process::InProcessTransportError) -> Self {
+        Self::McpServer(error)
     }
 }
 
@@ -133,6 +143,8 @@ impl From<Error> for rmcp::Error {
                 None,
             ),
             Error::Http(e) => rmcp::Error::internal_error(format!("HTTP error: {e}"), None),
+            Error::McpServer(e) => panic!("{e}"),
+            Error::Embedding(e) => panic!("{e}"),
         }
     }
 }
@@ -156,6 +168,7 @@ mod tests {
         // and can be handled properly in match statements
         match Error::NoToolUses {
             Error::Http(_) => unreachable!(),
+            Error::McpServer(_) => unreachable!(),
             Error::NoToolUses => {} // This should match
             _ => unreachable!(),
         }
@@ -175,6 +188,17 @@ mod tests {
         for error in errors {
             let display_str = format!("{error}");
             assert!(!display_str.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_mcp_server_error_enum_variant_exists() {
+        // Test that McpServer variant exists and can be matched
+        // We test the enum variant matching without creating the actual error
+        match Error::NoToolUses {
+            Error::McpServer(_) => unreachable!(),
+            Error::NoToolUses => {} // This should match
+            _ => unreachable!(),
         }
     }
 

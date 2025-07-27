@@ -1,3 +1,4 @@
+use crate::conversation::{Conversation, Id, Message};
 use crate::errors::Error;
 use crate::events::AppEvent;
 use crate::markdown::MarkdownRenderer;
@@ -15,32 +16,14 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use std::{
+    collections::HashMap,
     collections::VecDeque,
     io::{self, Stdout},
 };
 
-#[derive(Clone, Debug)]
-pub struct ConversationMessage {
-    pub content: String,
-    pub message_type: MessageType,
-    pub lines: Option<Vec<String>>,
-}
-
-#[derive(Clone, Debug)]
-pub enum MessageType {
-    User,
-    Assistant,
-    System,
-    Thinking,
-    Error,
-}
-
 pub struct Tui {
     terminal: Terminal<CrosstermBackend<Stdout>>,
-    current_line: String,
-    cursor_position: usize,
-    conversation: VecDeque<ConversationMessage>,
-    input_height: u16,
+    formatted: HashMap<Id, Vec<String>>,
     scroll_offset: u16,
     terminal_width: u16,
     terminal_height: u16,
@@ -61,29 +44,25 @@ impl Tui {
 
         let size = terminal.size()?;
 
-        let mut tui = Self {
+        let tui = Self {
             terminal,
-            current_line: String::new(),
-            cursor_position: 0,
-            conversation: VecDeque::new(),
-            input_height: 3,
+            formatted: HashMap::new(),
             scroll_offset: 0,
             terminal_width: size.width,
             terminal_height: size.height,
             markdown_renderer: MarkdownRenderer::new(size.width.saturating_sub(4) as usize),
         };
 
-        // Add welcome message
-        tui.add_message(
-            "Welcome to dmcli! Type your message and press Enter to send. Send 'roll 2d6' to roll a dice or 'exit' to quit.".to_string(),
-            MessageType::System,
-        );
-
         Ok(tui)
     }
 
-    pub fn render(&mut self) -> Result<(), Error> {
-        self.update_input_height();
+    pub fn render(
+        &mut self,
+        conversation: &Conversation,
+        input: &str,
+        cursor: usize,
+    ) -> Result<(), Error> {
+        let input_height = self.calculate_input_height(input);
 
         let size = ratatui::layout::Rect {
             x: 0,
@@ -95,50 +74,16 @@ impl Tui {
         // Create layout with conversation on top and input on bottom
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(self.input_height)])
+            .constraints([Constraint::Min(1), Constraint::Length(input_height)])
             .split(size);
 
-        let paragraph = Self::render_paragraph(
-            &mut self.conversation,
-            &mut self.markdown_renderer,
-            &mut self.scroll_offset,
-            chunks[0],
-        );
+        let paragraph = self.render_paragraph(conversation, chunks[0]);
 
         self.terminal.draw(|f| {
-            Self::render_ui_static(
-                f,
-                self.input_height,
-                &self.current_line,
-                self.cursor_position,
-                paragraph,
-                chunks[0],
-            );
+            Self::render_ui_static(f, input_height, input, cursor, paragraph, chunks[0]);
         })?;
 
         Ok(())
-    }
-
-    pub fn add_message(&mut self, content: String, message_type: MessageType) {
-        self.conversation.push_back(ConversationMessage {
-            content,
-            message_type,
-            lines: None,
-        });
-
-        // Keep conversation history reasonable (last 100 messages)
-        if self.conversation.len() > 100 {
-            self.conversation.pop_front();
-        }
-
-        // Auto-scroll to bottom when new messages are added
-        self.scroll_offset = 0;
-    }
-
-    pub fn input_updated(&mut self, current_line: String, cursor_position: usize) {
-        self.current_line = current_line;
-        self.cursor_position = cursor_position;
-        self.update_input_height();
     }
 
     pub fn resized(&mut self, width: u16, height: u16) {
@@ -147,11 +92,8 @@ impl Tui {
         self.terminal_height = height;
         self.markdown_renderer
             .with_width(width.saturating_sub(4) as usize);
-        self.update_input_height();
 
-        for message in self.conversation.iter_mut() {
-            message.lines = None;
-        }
+        self.formatted.clear();
     }
 
     pub fn handle_scroll_back(&mut self) {
@@ -162,13 +104,17 @@ impl Tui {
         self.scroll_offset = self.scroll_offset.saturating_sub(10_u16);
     }
 
-    fn update_input_height(&mut self) {
+    pub fn reset_scroll(&mut self) {
+        self.scroll_offset = 0;
+    }
+
+    fn calculate_input_height(&self, input_text: &str) -> u16 {
         let available_width = self.terminal_width.saturating_sub(4); // Account for borders
 
-        let lines = if self.current_line.is_empty() {
+        let lines = if input_text.is_empty() {
             1
         } else {
-            self.current_line
+            input_text
                 .lines()
                 .map(|line| {
                     if line.len() as u16 <= available_width {
@@ -181,7 +127,7 @@ impl Tui {
                 .max(1)
         };
 
-        self.input_height = (lines + 2).min(10); // Cap at 10 lines maximum
+        (lines + 2).min(10) // Cap at 10 lines maximum
     }
 
     fn render_ui_static(
@@ -207,50 +153,65 @@ impl Tui {
         Self::render_input_static(f, chunks[1], current_line, cursor_position);
     }
 
-    fn render_paragraph(
-        conversation: &mut VecDeque<ConversationMessage>,
-        markdown_renderer: &mut MarkdownRenderer,
-        in_scroll_offset: &mut u16,
+    fn render_paragraph<'a>(
+        &mut self,
+        conversation: impl IntoIterator<Item = &'a Message>,
         area: ratatui::layout::Rect,
     ) -> Paragraph<'static> {
         let mut lines: VecDeque<Line<'static>> = VecDeque::with_capacity(area.height as usize - 2);
-        let mut scroll_offset = *in_scroll_offset;
+        let mut scroll_offset = self.scroll_offset;
 
         let rendered_lines = conversation
-            .iter_mut()
-            .rev()
-            .flat_map(|msg| {
-                let style = match msg.message_type {
-                    MessageType::User => Style::default().fg(Color::Cyan),
-                    MessageType::Assistant => Style::default().fg(Color::Green),
-                    MessageType::System => Style::default().fg(Color::Yellow),
-                    MessageType::Thinking => Style::default()
-                        .fg(Color::Magenta)
-                        .add_modifier(Modifier::ITALIC),
-                    MessageType::Error => Style::default().fg(Color::Red),
+            .into_iter()
+            .filter_map(|msg| {
+                let (style, id, content) = match msg {
+                    Message::User { id, content, .. } => {
+                        (Style::default().fg(Color::Cyan), id, Some(content))
+                    }
+                    Message::Assistant { id, content, .. } => {
+                        (Style::default().fg(Color::Green), id, Some(content))
+                    }
+                    Message::System { id, content } => {
+                        (Style::default().fg(Color::Yellow), id, Some(content))
+                    }
+                    Message::Thinking { id, content, .. } => (
+                        Style::default()
+                            .fg(Color::Magenta)
+                            .add_modifier(Modifier::ITALIC),
+                        id,
+                        Some(content),
+                    ),
+                    Message::ThinkingDone { id, .. } => (Style::default(), id, None),
+                    Message::Error { id, content } => {
+                        (Style::default().fg(Color::Red), id, Some(content))
+                    }
                 };
 
-                let rendered_content = if let Some(cached) = msg.lines.as_ref() {
+                let rendered_content = if let Some(cached) = self.formatted.get(id) {
                     cached.clone()
                 } else {
-                    let rendered_content = markdown_renderer
-                        .render(&msg.content)
+                    let rendered_content = self
+                        .markdown_renderer
+                        .render(content?)
                         .lines()
                         .map(str::to_owned)
                         .collect::<Vec<_>>();
 
-                    msg.lines = Some(rendered_content.clone());
+                    self.formatted.insert(id.clone(), rendered_content.clone());
                     rendered_content
                 };
 
                 // Split the rendered content into lines and apply styling
-                rendered_content
+                let rendered = rendered_content
                     .into_iter()
                     .map(|line| Line::from(vec![Span::styled(line, style)]))
                     .chain(std::iter::once(Line::from("")))
                     .rev()
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>();
+
+                Some(rendered)
             })
+            .flatten()
             .collect::<Vec<_>>();
 
         for line in rendered_lines {
@@ -269,7 +230,7 @@ impl Tui {
         }
 
         // Fixes up any over-scrolling
-        *in_scroll_offset -= scroll_offset;
+        self.scroll_offset -= scroll_offset;
 
         let text = Text::from(lines.into_iter().collect::<Vec<_>>());
 
