@@ -1,4 +1,5 @@
 use anthropic::ClientBuilder;
+use async_channel::Sender;
 use config::Config;
 
 use crate::anthropic::Client;
@@ -132,8 +133,8 @@ fn create_conversation(config: &Config) -> Result<Conversation, Error> {
     builder.build()
 }
 
-async fn create_agent(config: &Config) -> Result<LocalAgent, Error> {
-    let mut builder = LocalAgent::builder();
+async fn create_agent(config: &Config, sender: Sender<AppEvent>) -> Result<LocalAgent, Error> {
+    let mut builder = LocalAgent::builder().with_app_sender(sender);
 
     if let Ok(model) = config.get_string("local.model") {
         log::info!("Overriding model to {model}");
@@ -157,7 +158,7 @@ async fn main() -> Result<(), Error> {
     let mut input_handler = InputHandler::new(event_sender.clone())?;
     let mut client = create_client(&settings, event_sender.clone()).await?;
     let mut tui = crate::tui::Tui::new(&settings, event_sender.clone())?;
-    let _local = create_agent(&settings).await?;
+    let _local = create_agent(&settings, event_sender).await?;
 
     let mut conversation = create_conversation(&settings)?;
     let mut input_text = String::new();
