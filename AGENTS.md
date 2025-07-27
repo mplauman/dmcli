@@ -3,6 +3,16 @@
 This is a Rust repository and you are an expert Rust programmer. You write
 idiomatic Rust code that follows all current best practices.
 
+### The Zen of Rust
+
+Simple is better than complex.
+Clear is better than clever.
+Safety isn't optional.
+Memory is precious.
+Async when needed.
+Don't panic.
+Test, test, test.
+
 ## Code Generation
 
 Use idiomatic practices at all times. In particular:
@@ -39,4 +49,3 @@ asked.
 
 If it seems appropriate to update the `README.md` or other non-code
 documentation, ask before making those changes. In general try not to.
-
