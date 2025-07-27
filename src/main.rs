@@ -7,6 +7,7 @@ use crate::conversation::Conversation;
 use crate::errors::Error;
 use crate::events::AppEvent;
 use crate::input::InputHandler;
+use crate::local_agent::LocalAgent;
 
 mod anthropic;
 mod commands;
@@ -14,6 +15,7 @@ mod conversation;
 mod errors;
 mod events;
 mod input;
+mod local_agent;
 mod logger;
 mod markdown;
 mod obsidian;
@@ -130,6 +132,22 @@ fn create_conversation(config: &Config) -> Result<Conversation, Error> {
     builder.build()
 }
 
+async fn create_agent(config: &Config) -> Result<LocalAgent, Error> {
+    let mut builder = LocalAgent::builder();
+
+    if let Ok(model) = config.get_string("local.model") {
+        log::info!("Overriding model to {model}");
+        builder = builder.with_model(model);
+    }
+
+    if let Ok(dir) = config.get_string("local.cache_dir") {
+        log::info!("Overriding cache directory to {dir}");
+        builder = builder.with_cache_dir(dir);
+    }
+
+    builder.build().await
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
     let settings = load_settings()?;
@@ -139,6 +157,7 @@ async fn main() -> Result<(), Error> {
     let mut input_handler = InputHandler::new(event_sender.clone())?;
     let mut client = create_client(&settings, event_sender.clone()).await?;
     let mut tui = crate::tui::Tui::new(&settings, event_sender.clone())?;
+    let _local = create_agent(&settings).await?;
 
     let mut conversation = create_conversation(&settings)?;
     let mut input_text = String::new();
