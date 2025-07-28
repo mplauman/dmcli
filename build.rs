@@ -1,12 +1,13 @@
-use hf_hub::api::sync::Api;
+use hf_hub::api::sync::{Api, ApiError};
 use std::env;
+use std::env::VarError;
 use std::fs;
 use std::path::Path;
 
-fn main() -> std::io::Result<()> {
+fn main() -> Result<(), BuildError> {
     println!("cargo:rerun-if-changed=build.rs");
 
-    let out_dir = env::var("OUT_DIR").expect("OUT_DIR not set");
+    let out_dir = env::var("OUT_DIR")?;
     let model_dir = Path::new(&out_dir).join("model");
 
     // Create model directory if it doesn't exist
@@ -21,7 +22,7 @@ fn main() -> std::io::Result<()> {
         println!("cargo:info=Downloading minishlab/potion-base-8M model...");
 
         // Initialize HF Hub API
-        let api = Api::new().expect("hf-hub API init failed");
+        let api = Api::new()?;
         let repo = api.model("minishlab/potion-base-8M".to_string());
 
         // Download model files
@@ -59,4 +60,39 @@ pub const CONFIG_BYTES: &[u8] = include_bytes!(r"{}");
     fs::write(&constants_path, constants_code)?;
 
     Ok(())
+}
+
+#[derive(Debug)]
+enum BuildError {
+    MissingVariable(String),
+    IO(String),
+    HuggingFace(String),
+}
+
+impl From<VarError> for BuildError {
+    fn from(err: VarError) -> Self {
+        BuildError::MissingVariable(err.to_string())
+    }
+}
+
+impl From<std::io::Error> for BuildError {
+    fn from(err: std::io::Error) -> Self {
+        BuildError::IO(err.to_string())
+    }
+}
+
+impl From<ApiError> for BuildError {
+    fn from(err: ApiError) -> Self {
+        BuildError::HuggingFace(err.to_string())
+    }
+}
+
+impl std::fmt::Display for BuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BuildError::MissingVariable(var) => write!(f, "Missing variable: {var}"),
+            BuildError::IO(err) => write!(f, "IO error: {err}"),
+            BuildError::HuggingFace(err) => write!(f, "HuggingFace error: {err}"),
+        }
+    }
 }
