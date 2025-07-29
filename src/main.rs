@@ -155,10 +155,18 @@ async fn main() -> Result<(), Error> {
     init_logging(&settings)?;
 
     let (event_sender, event_receiver) = async_channel::unbounded::<AppEvent>();
+
+    let _local_agent = create_agent(&settings, event_sender.clone()).await?;
+    let mut exit = false;
+    if !exit {
+        exit = true;
+    }
+    if exit {
+        return Ok(());
+    }
+
     let mut input_handler = InputHandler::new(event_sender.clone())?;
     let mut client = create_client(&settings, event_sender.clone()).await?;
-    let mut tui = crate::tui::Tui::new(&settings, event_sender.clone())?;
-    let _local = create_agent(&settings, event_sender).await?;
 
     let mut conversation = create_conversation(&settings)?;
     let mut input_text = String::new();
@@ -173,6 +181,7 @@ async fn main() -> Result<(), Error> {
 
     conversation.system("Welcome to dmcli! Type your message and press Enter to send. Send 'roll 2d6' to roll a dice or 'exit' to quit.");
 
+    let mut tui = crate::tui::Tui::new(&settings, event_sender.clone())?;
     tui.render(&conversation, &input_text, input_cursor)?;
     while let Ok(event) = event_receiver.recv().await {
         log::debug!("Got event, updating");
