@@ -137,27 +137,27 @@ impl LocalAgentBuilder {
         let api = hf_hub::api::sync::Api::new().expect("Failed to create HF Hub API");
         let model_path = api
             .repo(hf_hub::Repo::with_revision(
-                "TheBloke/Llama-2-7B-GGML".to_string(),
+                "microsoft/Phi-3-mini-4k-instruct-gguf".to_string(),
                 hf_hub::RepoType::Model,
                 "main".to_string(),
             ))
-            .get("llama-2-7b.ggmlv3.q4_0.bin")
+            .get("Phi-3-mini-4k-instruct-q4.gguf")
             .expect("Failed to download model file");
         let mut file = std::fs::File::open(&model_path)?;
 
         log::info!("Initializing model");
         let device = Device::Cpu;
-        let gqa = 1;
-        let model = candle_core::quantized::ggml_file::Content::read(&mut file, &device)
+        let model = candle_core::quantized::gguf_file::Content::read(&mut file)
             .map_err(|e| e.with_path(model_path))
-            .expect("failed to read ggml file");
-        let mut model =
-            candle_transformers::models::quantized_llama::ModelWeights::from_ggml(model, gqa)
-                .expect("Can build model");
+            .expect("failed to read gguf file");
+        let mut model = candle_transformers::models::quantized_phi3::ModelWeights::from_gguf(
+            false, model, &mut file, &device,
+        )
+        .expect("Can build model");
 
         log::info!("Downloading tokenizer");
         let tokenizer_path = api
-            .model("hf-internal-testing/llama-tokenizer".to_string())
+            .model("microsoft/Phi-3-mini-4k-instruct".to_string())
             .get("tokenizer.json")
             .expect("Failed to download tokenizer file");
 
@@ -167,7 +167,8 @@ impl LocalAgentBuilder {
         let mut tos = TokenOutputStream::new(tokenizer);
 
         print!("Finishing query:");
-        let prompt_str = "Context: you are a helpful assistant that speaks only english. You will be given requests prefixed with the phrase '{user}' and will provide responses prefixed with '{agent}'. Keep your responses as brief and concise as possible. {user} Describe a dog in five words or less.";
+        let prompt_str = "<|user|>\nWrite a haiku about ice hockey<|end|>\n<|assistant|>";
+        // let prompt_str = "Context: you are a helpful assistant that speaks only english. You will be given requests prefixed with the phrase '{user}' and will provide responses prefixed with '{agent}'. Keep your responses as brief and concise as possible. {user} Describe a dog in five words or less.";
         let temperature = 0.8;
         let sample_len = 1000;
         let seed = 299792458;
@@ -176,7 +177,7 @@ impl LocalAgentBuilder {
         let eos_token = *tos
             .tokenizer()
             .get_vocab(true)
-            .get("</s>")
+            .get("<|end|>")
             .expect("can get eos token");
         log::info!("EOS token: {eos_token}");
 
