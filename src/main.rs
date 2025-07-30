@@ -136,14 +136,24 @@ fn create_conversation(config: &Config) -> Result<Conversation, Error> {
 async fn create_agent(config: &Config, sender: Sender<AppEvent>) -> Result<LocalAgent, Error> {
     let mut builder = LocalAgent::builder().with_app_sender(sender);
 
-    if let Ok(model) = config.get_string("local.model") {
-        log::info!("Overriding model to {model}");
-        builder = builder.with_model(model);
+    if let Ok(seed) = config.get_int("local.seed") {
+        log::info!("Overriding seed to {seed}");
+        builder = builder.with_seed(seed.try_into().expect("seed is u64"));
     }
 
-    if let Ok(dir) = config.get_string("local.cache_dir") {
-        log::info!("Overriding cache directory to {dir}");
-        builder = builder.with_cache_dir(dir);
+    if let Ok(temperature) = config.get_float("local.temperature") {
+        log::info!("Overriding temperature to {temperature}");
+        builder = builder.with_temperature(temperature);
+    }
+
+    if let Ok(max_tokens) = config.get_int("local.max_sample_len") {
+        log::info!("Overriding max tokens to {max_tokens}");
+        builder = builder.with_max_sample_len(max_tokens.try_into().expect("max tokens is usize"));
+    }
+
+    if let Ok(top_p) = config.get_float("local.top_p") {
+        log::info!("Overriding top_p to {top_p}");
+        builder = builder.with_top_p(top_p);
     }
 
     builder.build().await
@@ -156,17 +166,9 @@ async fn main() -> Result<(), Error> {
 
     let (event_sender, event_receiver) = async_channel::unbounded::<AppEvent>();
 
-    let _local_agent = create_agent(&settings, event_sender.clone()).await?;
-    let mut exit = false;
-    if !exit {
-        exit = true;
-    }
-    if exit {
-        return Ok(());
-    }
-
     let mut input_handler = InputHandler::new(event_sender.clone())?;
     let mut client = create_client(&settings, event_sender.clone()).await?;
+    let _local_agent = create_agent(&settings, event_sender.clone()).await?;
 
     let mut conversation = create_conversation(&settings)?;
     let mut input_text = String::new();
@@ -234,6 +236,10 @@ async fn main() -> Result<(), Error> {
             AppEvent::WindowResized { width, height } => tui.resized(width, height),
             AppEvent::ScrollBack => tui.handle_scroll_back(),
             AppEvent::ScrollForward => tui.handle_scroll_forward(),
+            AppEvent::System(text) => {
+                conversation.system(text);
+                tui.reset_scroll();
+            }
         }
 
         tui.render(&conversation, &input_text, input_cursor)?

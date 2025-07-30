@@ -10,6 +10,7 @@ pub enum AppEvent {
     AiError(String),
     InputUpdated { line: String, cursor: usize },
     WindowResized { width: u16, height: u16 },
+    System(String),
     ScrollBack,
     ScrollForward,
     Exit,
