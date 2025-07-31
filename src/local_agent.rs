@@ -1,3 +1,4 @@
+use crate::conversation::{Conversation, Message};
 use crate::errors::Error;
 use crate::events::AppEvent;
 use async_channel::{Receiver, Sender};
@@ -10,6 +11,46 @@ use tokenizers::Tokenizer;
 // Include the generated constants from the build script
 //include!(concat!(env!("OUT_DIR"), "/model_constants.rs"));
 
+static SYSTEM_PROMPT: &str = "
+You are a dungeon master's helpful assistant. You're role is to help them search through their notes to
+provide them with information and backstory to help them prepare for games. You will also help them
+create NPCs, monsters, scenes, situations, and descriptions of fantastic items based on the style of
+the dungeon master's session notes.
+
+## Communication
+
+1. Keep your responses short. Avoid unnecessary details or tangents.
+2. Don't apologize if you're unable to do something. Do your best, and explain why if you are unable to proceed.
+3. As much as possible, base your answers on the DM's notes. Read multiple files to gain context.
+4. Bias towards not asking the user for help if you can find the answer yourself.
+5. When providing paths to tools, the path should always begin with a path that starts with a project root directory listed above.
+6. Before you read or edit a file, you must first find the full path. DO NOT ever guess a file path!
+
+## Tool Usage
+
+1. When multiple tools can be used independently to solve different parts of a request, use them in parallel rather than sequentially.
+2. For example, if you need to search for both a character and a location, make both tool calls at once rather than one after the other.
+3. For dependent tools (where one tool's output is needed for another), use them sequentially as required.
+4. Always try to minimize the number of back-and-forth interactions by batching independent tool calls.
+
+## Searching Notes
+
+When searching through notes, first get a list of all the potentially interesting files by listing them, grepping through
+them, or both. When you have a list of candidates, read their contents and use that to inform your answer. Most of the time
+the information you will need is spread through multiple files.
+
+## Monster Generation
+
+Immediately generate the monster stat block AND ONLY the monster stat block. Do not generate any remarks before or after the stat block. Wrap the stat block in a code block and format it as markdown.
+
+Use this stat block format for monsters:
+```
+| STR | DEX | CON | INT | WIS | CHA |
+|:---:|:---:|:---:|:---:|:---:|:---:|
+| 19 (+4) | 12 (+1) | 18 (+4) | 12 (+1) | 16 (+3) | 14 (+2) |
+```
+";
+
 /// A local agent that can be used for inference and text generation.
 pub struct LocalAgent {
     client_sender: Sender<AgentAction>,
@@ -19,6 +60,16 @@ impl LocalAgent {
     /// Creates a new builder for configuring a LocalAgent
     pub fn builder() -> LocalAgentBuilder {
         LocalAgentBuilder::default()
+    }
+
+    pub fn push(&mut self, conversation: &Conversation) -> Result<(), Error> {
+        if let Some(Message::User { content, .. }) = conversation.into_iter().next() {
+            self.client_sender
+                .try_send(AgentAction::Chat(content.clone()))
+                .expect("The client sender channel is still open");
+        };
+
+        Ok(())
     }
 }
 
@@ -31,7 +82,7 @@ impl Drop for LocalAgent {
 }
 
 enum AgentAction {
-    Chat,
+    Chat(String),
     Initialize,
     Poison,
 }
@@ -53,7 +104,7 @@ impl AgentLoop {
             log::debug!("Got event, updating");
 
             match action {
-                AgentAction::Chat => self.chat().await?,
+                AgentAction::Chat(text) => self.chat(&text).await?,
                 AgentAction::Initialize => self.initialize().await?,
                 AgentAction::Poison => break,
             }
@@ -62,11 +113,15 @@ impl AgentLoop {
         Ok(())
     }
 
-    async fn chat(&mut self) -> Result<(), Error> {
-        let prompt_str = "<|user|>\nWrite a haiku about ice hockey<|end|>\n<|assistant|>";
+    async fn chat(&mut self, text: &str) -> Result<(), Error> {
+        let prompt_str =
+            format!("<|system|>\n{SYSTEM_PROMPT}\n<|end|><|user|>\n{text}<|end|>\n<|assistant|>");
 
-        let tos = self.tos.take().expect("tos has been set up");
-        let mut model = self.model.take().expect("model has been set up");
+        let tos = self.tos.as_ref().expect("tos has been set up");
+
+        log::info!("Cloning model...");
+        let mut model = self.model.as_ref().expect("model has been set up").clone();
+        log::info!("Cloning done");
 
         let mut tokens = tos
             .encode(prompt_str, true)
@@ -112,9 +167,6 @@ impl AgentLoop {
         }
 
         let decoded = tos.decode(&response, true).expect("can decode tokens");
-
-        self.tos = Some(tos);
-        self.model = Some(model);
 
         self.emit_app_event(AppEvent::AiResponse(decoded));
 
@@ -162,7 +214,6 @@ impl AgentLoop {
         self.tos = Some(tokenizer);
 
         self.emit_app_event(AppEvent::System("Finished initializing local agent".into()));
-        self.add_next_action(AgentAction::Chat);
 
         Ok(())
     }

@@ -167,8 +167,8 @@ async fn main() -> Result<(), Error> {
     let (event_sender, event_receiver) = async_channel::unbounded::<AppEvent>();
 
     let mut input_handler = InputHandler::new(event_sender.clone())?;
-    let mut client = create_client(&settings, event_sender.clone()).await?;
-    let _local_agent = create_agent(&settings, event_sender.clone()).await?;
+    let mut anthropic_client = create_client(&settings, event_sender.clone()).await?;
+    let mut local_client = create_agent(&settings, event_sender.clone()).await?;
 
     let mut conversation = create_conversation(&settings)?;
     let mut input_text = String::new();
@@ -208,7 +208,8 @@ async fn main() -> Result<(), Error> {
                 if !line.is_empty() {
                     conversation.user(&line);
                     tui.reset_scroll();
-                    client.push(&conversation)?;
+                    anthropic_client.push(&conversation)?;
+                    local_client.push(&conversation)?;
                 }
             }
             AppEvent::Exit => {
