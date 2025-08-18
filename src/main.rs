@@ -130,7 +130,7 @@ fn create_conversation(config: &Config) -> Result<Conversation, Error> {
     builder.build()
 }
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() -> Result<(), Error> {
     let settings = load_settings()?;
     init_logging(&settings)?;
