@@ -90,20 +90,6 @@ pub struct GetNoteByTagRequest {
     pub folder_path: Option<String>,
 }
 
-#[derive(serde::Serialize)]
-pub struct FileMetadata {
-    /// Creation date of the file (timestamp)
-    pub creation_date: u64,
-    /// Modification date of the file (timestamp)
-    pub modification_date: u64,
-    /// Tags extracted from the markdown content (format: #tag)
-    pub tags: Vec<String>,
-    /// Links extracted from the markdown content (format: [[link]])
-    pub links: Vec<String>,
-    /// Frontmatter properties as key-value pairs from Markdown frontmatter (--- delimited section)
-    pub frontmatter: serde_json::Value,
-}
-
 /// Response structure for get_tags_summary
 ///
 /// This structure represents a single tag found in the vault, including
@@ -354,12 +340,11 @@ impl Obsidian {
         let result_path = self.vault.join(path_obj);
 
         // Ensure the path stays within the vault (prevent directory traversal)
-        if let Ok(canonical_result) = result_path.canonicalize() {
-            if let Ok(canonical_vault) = self.vault.canonicalize() {
-                if !canonical_result.starts_with(canonical_vault) {
-                    return Err(Error::InvalidVaultPath(path.to_string()));
-                }
-            }
+        if let Ok(canonical_result) = result_path.canonicalize()
+            && let Ok(canonical_vault) = self.vault.canonicalize()
+            && !canonical_result.starts_with(canonical_vault)
+        {
+            return Err(Error::InvalidVaultPath(path.to_string()));
         }
 
         Ok(result_path)
@@ -889,10 +874,11 @@ impl Obsidian {
 
         for file_path in files {
             // Only search text files (primarily markdown)
-            if let Some(ext) = file_path.extension() {
-                if ext != "md" && ext != "txt" {
-                    continue;
-                }
+            if let Some(ext) = file_path.extension()
+                && ext != "md"
+                && ext != "txt"
+            {
+                continue;
             }
 
             let relative_path = file_path
@@ -1887,8 +1873,7 @@ mod tests {
         let result = obsidian.validate_vault_path("../../../etc/passwd");
         // This might not error on all systems if the path doesn't exist to canonicalize,
         // but it should at least not give access outside the vault
-        if result.is_ok() {
-            let path = result.unwrap();
+        if let Ok(path) = result {
             // Ensure the path is still within the vault directory structure
             assert!(path.starts_with(&obsidian.vault));
         }
