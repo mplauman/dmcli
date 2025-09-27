@@ -11,6 +11,7 @@ use crate::input::InputHandler;
 mod anthropic;
 mod commands;
 mod conversation;
+mod embeddings;
 mod errors;
 mod events;
 mod input;
@@ -119,15 +120,12 @@ async fn create_client(
     builder.build().await
 }
 
-fn create_conversation(config: &Config) -> Result<Conversation, Error> {
-    let mut builder = Conversation::builder();
+fn create_conversation(_config: &Config) -> Result<Conversation, Error> {
+    use crate::embeddings::EmbeddingGeneratorBuilder;
 
-    if let Ok(embedding_model) = config.get_string("anthropic.embedding_model") {
-        log::info!("Overriding embedding model to {embedding_model}");
-        builder = builder.with_embedding_model(embedding_model);
-    }
+    let embedder = EmbeddingGeneratorBuilder::default().build()?;
 
-    builder.build()
+    Conversation::builder().with_embedder(embedder).build()
 }
 
 #[tokio::main]
