@@ -1,11 +1,9 @@
+use crate::embeddings::EmbeddingGenerator;
 use crate::errors::Error;
-use model2vec_rs::model::StaticModel;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use serde_json::Value;
-
-// Include the generated constants from the build script
-include!(concat!(env!("OUT_DIR"), "/model_constants.rs"));
 
 /// A unique identifier for a message in a conversation
 ///
@@ -126,7 +124,7 @@ impl std::fmt::Display for Message {
 pub struct Conversation {
     id: SystemTime,
     messages: Vec<Message>,
-    embedder: StaticModel,
+    embedder: Arc<EmbeddingGenerator>,
 }
 
 impl Conversation {
@@ -198,7 +196,7 @@ impl Conversation {
     }
 
     fn encode(&self, content: &str) -> Vec<f32> {
-        self.embedder.encode_single(content)
+        self.embedder.encode(content)
     }
 
     pub fn related(&self, skip: usize, content: &str, max: usize) -> Vec<Message> {
@@ -208,12 +206,15 @@ impl Conversation {
 
         for message in self.into_iter().skip(skip) {
             let distances = match message {
-                Message::User { encoding, .. } => vec![distance(&target, encoding)],
-                Message::Assistant { encoding, .. } => vec![distance(&target, encoding)],
-                Message::Thinking { .. } => continue,
-                Message::ThinkingDone { tools, .. } => {
-                    tools.iter().map(|t| distance(&target, &t.3)).collect()
+                Message::User { encoding, .. } => vec![self.embedder.distance(&target, encoding)],
+                Message::Assistant { encoding, .. } => {
+                    vec![self.embedder.distance(&target, encoding)]
                 }
+                Message::Thinking { .. } => continue,
+                Message::ThinkingDone { tools, .. } => tools
+                    .iter()
+                    .map(|t| self.embedder.distance(&target, &t.3))
+                    .collect(),
                 Message::System { .. } => continue,
                 Message::Error { .. } => continue,
             };
@@ -261,14 +262,6 @@ impl Conversation {
     }
 }
 
-fn distance(a: &[f32], b: &[f32]) -> f32 {
-    // For normalized vectors, cosine similarity is just the dot product
-    let dot_product: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-
-    // Convert similarity to distance (1 - similarity)
-    1.0 - dot_product
-}
-
 struct RankedMessage {
     message: Message,
     distance: f32,
@@ -303,9 +296,69 @@ impl<'a> IntoIterator for &'a Conversation {
     }
 }
 
+#[derive(Default)]
+pub struct ConversationBuilder {
+    embedder: Option<Arc<EmbeddingGenerator>>,
+}
+
+impl ConversationBuilder {
+    /// Sets the embedding generator instance to use for the conversation
+    ///
+    /// # Arguments
+    ///
+    /// * `embedder` - An Arc-wrapped instance of EmbeddingGenerator
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use dmcli::embeddings::EmbeddingGeneratorBuilder;
+    /// use dmcli::conversation::ConversationBuilder;
+    /// use std::sync::Arc;
+    ///
+    /// let embedder = Arc::new(EmbeddingGeneratorBuilder::default().build().unwrap());
+    /// let conversation = ConversationBuilder::default()
+    ///     .with_embedder(embedder)
+    ///     .build()
+    ///     .unwrap();
+    /// ```
+    pub fn with_embedder(self, embedder: Arc<EmbeddingGenerator>) -> Self {
+        Self {
+            embedder: Some(embedder),
+        }
+    }
+
+    pub fn build(self) -> Result<Conversation, Error> {
+        let embedder = self.embedder.ok_or_else(|| {
+            Error::Embedding(
+                "No embedding generator provided. Use with_embedder() to set one.".to_string(),
+            )
+        })?;
+
+        Ok(Conversation {
+            id: SystemTime::now(),
+            messages: Vec::new(),
+            embedder,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Helper method to create a new conversation for testing
+    fn create_test_conversation() -> Conversation {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let embedder = crate::embeddings::EmbeddingGeneratorBuilder::default()
+            .with_cache_dir(temp_dir.path())
+            .build()
+            .map(Arc::new)
+            .unwrap();
+        ConversationBuilder::default()
+            .with_embedder(embedder)
+            .build()
+            .unwrap()
+    }
 
     impl Message {
         fn content(&self) -> String {
@@ -329,11 +382,7 @@ mod tests {
 
     #[test]
     fn test_into_iterator_implementation() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let mut conversation = ConversationBuilder::default()
-            .with_cache_dir(temp_dir.path())
-            .build()
-            .unwrap();
+        let mut conversation = create_test_conversation();
         conversation.user("Hello");
         conversation.assistant("Hi there!");
         conversation.system("Connection established");
@@ -352,22 +401,14 @@ mod tests {
 
     #[test]
     fn test_related_empty_conversation() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let conversation = ConversationBuilder::default()
-            .with_cache_dir(temp_dir.path())
-            .build()
-            .unwrap();
+        let conversation = create_test_conversation();
         let related = conversation.related(0, "test query", 5);
         assert_eq!(related.len(), 0);
     }
 
     #[test]
     fn test_related_max_zero() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let mut conversation = ConversationBuilder::default()
-            .with_cache_dir(temp_dir.path())
-            .build()
-            .unwrap();
+        let mut conversation = create_test_conversation();
         conversation.user("Hello world");
         conversation.assistant("Hi there");
 
@@ -377,11 +418,7 @@ mod tests {
 
     #[test]
     fn test_related_respects_max_limit() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let mut conversation = ConversationBuilder::default()
-            .with_cache_dir(temp_dir.path())
-            .build()
-            .unwrap();
+        let mut conversation = create_test_conversation();
         conversation.user("First message");
         conversation.assistant("First response");
         conversation.user("Second message");
@@ -397,11 +434,7 @@ mod tests {
 
     #[test]
     fn test_related_only_includes_rankable_messages() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let mut conversation = ConversationBuilder::default()
-            .with_cache_dir(temp_dir.path())
-            .build()
-            .unwrap();
+        let mut conversation = create_test_conversation();
         conversation.user("User message");
         conversation.assistant("Assistant message");
         conversation.system("System message");
@@ -424,11 +457,7 @@ mod tests {
 
     #[test]
     fn test_related_includes_thinking_done_tools() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let mut conversation = ConversationBuilder::default()
-            .with_cache_dir(temp_dir.path())
-            .build()
-            .unwrap();
+        let mut conversation = create_test_conversation();
         conversation.user("User message");
         conversation.thinking_done(vec![
             (
@@ -458,11 +487,7 @@ mod tests {
 
     #[test]
     fn test_related_message_content_preserved() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let mut conversation = ConversationBuilder::default()
-            .with_cache_dir(temp_dir.path())
-            .build()
-            .unwrap();
+        let mut conversation = create_test_conversation();
         let user_content = "Hello world";
         let assistant_content = "Hi there friend";
 
@@ -481,11 +506,7 @@ mod tests {
 
     #[test]
     fn test_related_different_similarities() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let mut conversation = ConversationBuilder::default()
-            .with_cache_dir(temp_dir.path())
-            .build()
-            .unwrap();
+        let mut conversation = create_test_conversation();
 
         // Add messages with different expected similarities to "cat"
         conversation.user("I love cats and dogs"); // Should be most similar
@@ -509,11 +530,7 @@ mod tests {
 
     #[test]
     fn test_related_preserves_message_ids() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let mut conversation = ConversationBuilder::default()
-            .with_cache_dir(temp_dir.path())
-            .build()
-            .unwrap();
+        let mut conversation = create_test_conversation();
         conversation.user("First message");
         conversation.assistant("Response");
 
@@ -542,8 +559,14 @@ mod tests {
         assert!(!cache_path.join("config.json").exists());
 
         // Build conversation with custom cache directory
+        let embedder = Arc::new(
+            crate::embeddings::EmbeddingGeneratorBuilder::default()
+                .with_cache_dir(cache_path)
+                .build()
+                .unwrap(),
+        );
         let _conversation = ConversationBuilder::default()
-            .with_cache_dir(cache_path)
+            .with_embedder(embedder)
             .build()
             .unwrap();
 
@@ -561,92 +584,43 @@ mod tests {
         assert!(!model_content.is_empty());
         assert!(!config_content.is_empty());
     }
-}
 
-#[derive(Default)]
-pub struct ConversationBuilder {
-    embedding_model: Option<String>,
-    cache_dir: Option<std::path::PathBuf>,
-}
+    #[test]
+    fn test_shared_embedder() {
+        use std::sync::Arc;
 
-impl ConversationBuilder {
-    pub fn with_embedding_model(self, model: String) -> Self {
-        Self {
-            embedding_model: Some(model),
-            ..self
-        }
-    }
+        let temp_dir = tempfile::tempdir().unwrap();
+        let embedder = Arc::new(
+            crate::embeddings::EmbeddingGeneratorBuilder::default()
+                .with_cache_dir(temp_dir.path())
+                .build()
+                .unwrap(),
+        );
 
-    /// Sets the cache directory for storing embedding model files.
-    ///
-    /// When a cache directory is specified, the embedding model files (tokenizer.json,
-    /// model.safetensors, and config.json) will be stored in or loaded from this directory.
-    /// If the files don't exist, they will be created automatically.
-    ///
-    /// # Arguments
-    ///
-    /// * `cache_dir` - Path to the directory where model files should be cached
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use std::path::Path;
-    /// let conversation = ConversationBuilder::default()
-    ///     .with_cache_dir("/tmp/my_cache")
-    ///     .build()
-    ///     .unwrap();
-    /// ```
-    pub fn with_cache_dir<P: Into<std::path::PathBuf>>(self, cache_dir: P) -> Self {
-        Self {
-            cache_dir: Some(cache_dir.into()),
-            ..self
-        }
-    }
+        // Create multiple conversations sharing the same embedder
+        let mut conversation1 = ConversationBuilder::default()
+            .with_embedder(Arc::clone(&embedder))
+            .build()
+            .unwrap();
 
-    pub fn build(self) -> Result<Conversation, Error> {
-        let embedding_model_or_path = match self.embedding_model {
-            Some(embedding_model) => embedding_model,
-            None => {
-                let folder = self
-                    .cache_dir
-                    .unwrap_or_else(|| dirs::cache_dir().expect("cache dir exists").join("dmcli"));
+        let mut conversation2 = ConversationBuilder::default()
+            .with_embedder(Arc::clone(&embedder))
+            .build()
+            .unwrap();
 
-                if !folder.exists() {
-                    std::fs::create_dir_all(&folder)?;
-                }
+        // Add messages to both conversations
+        conversation1.user("Hello from conversation 1");
+        conversation2.user("Hello from conversation 2");
 
-                // Always ensure model files exist in the cache directory
-                let tokenizer_path = folder.join("tokenizer.json");
-                let model_path = folder.join("model.safetensors");
-                let config_path = folder.join("config.json");
+        // Verify both conversations work independently
+        assert_eq!(conversation1.messages.len(), 1);
+        assert_eq!(conversation2.messages.len(), 1);
 
-                if !tokenizer_path.exists() {
-                    std::fs::write(&tokenizer_path, TOKENIZER_BYTES)?;
-                }
-                if !model_path.exists() {
-                    std::fs::write(&model_path, MODEL_BYTES)?;
-                }
-                if !config_path.exists() {
-                    std::fs::write(&config_path, CONFIG_BYTES)?;
-                }
+        // Verify they can both use the embedder
+        let related1 = conversation1.related(0, "hello", 5);
+        let related2 = conversation2.related(0, "hello", 5);
 
-                folder.to_string_lossy().into_owned()
-            }
-        };
-
-        log::info!("Loading Model2Vec model: {embedding_model_or_path}");
-        let embedder = StaticModel::from_pretrained(
-            embedding_model_or_path,
-            None,       // No HuggingFace token needed for public models
-            Some(true), // Ensure normalized for ranking
-            None,       // No subfolder
-        )
-        .map_err(|e| Error::Embedding(format!("{e}")))?;
-
-        Ok(Conversation {
-            id: SystemTime::now(),
-            messages: Vec::new(),
-            embedder,
-        })
+        assert_eq!(related1.len(), 1);
+        assert_eq!(related2.len(), 1);
     }
 }

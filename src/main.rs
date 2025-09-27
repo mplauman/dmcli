@@ -1,9 +1,11 @@
 use anthropic::ClientBuilder;
 use config::Config;
+use std::sync::Arc;
 
 use crate::anthropic::Client;
 use crate::commands::DmCommand;
 use crate::conversation::Conversation;
+use crate::embeddings::{EmbeddingGenerator, EmbeddingGeneratorBuilder};
 use crate::errors::Error;
 use crate::events::AppEvent;
 use crate::input::InputHandler;
@@ -11,6 +13,7 @@ use crate::input::InputHandler;
 mod anthropic;
 mod commands;
 mod conversation;
+mod embeddings;
 mod errors;
 mod events;
 mod input;
@@ -119,15 +122,15 @@ async fn create_client(
     builder.build().await
 }
 
-fn create_conversation(config: &Config) -> Result<Conversation, Error> {
-    let mut builder = Conversation::builder();
+fn create_embedder(_config: &Config) -> Result<Arc<EmbeddingGenerator>, Error> {
+    EmbeddingGeneratorBuilder::default().build().map(Arc::new)
+}
 
-    if let Ok(embedding_model) = config.get_string("anthropic.embedding_model") {
-        log::info!("Overriding embedding model to {embedding_model}");
-        builder = builder.with_embedding_model(embedding_model);
-    }
-
-    builder.build()
+fn create_conversation(
+    _config: &Config,
+    embedder: Arc<EmbeddingGenerator>,
+) -> Result<Conversation, Error> {
+    Conversation::builder().with_embedder(embedder).build()
 }
 
 #[tokio::main]
@@ -140,7 +143,8 @@ async fn main() -> Result<(), Error> {
     let mut client = create_client(&settings, event_sender.clone()).await?;
     let mut tui = crate::tui::Tui::new(&settings, event_sender.clone())?;
 
-    let mut conversation = create_conversation(&settings)?;
+    let embedder = create_embedder(&settings)?;
+    let mut conversation = create_conversation(&settings, embedder)?;
     let mut input_text = String::new();
     let mut input_cursor = usize::default();
 
