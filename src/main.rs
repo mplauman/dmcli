@@ -1,9 +1,11 @@
 use anthropic::ClientBuilder;
 use config::Config;
+use std::sync::Arc;
 
 use crate::anthropic::Client;
 use crate::commands::DmCommand;
 use crate::conversation::Conversation;
+use crate::embeddings::{EmbeddingGenerator, EmbeddingGeneratorBuilder};
 use crate::errors::Error;
 use crate::events::AppEvent;
 use crate::input::InputHandler;
@@ -120,12 +122,14 @@ async fn create_client(
     builder.build().await
 }
 
-fn create_conversation(_config: &Config) -> Result<Conversation, Error> {
-    use crate::embeddings::EmbeddingGeneratorBuilder;
-    use std::sync::Arc;
+fn create_embedder(_config: &Config) -> Result<Arc<EmbeddingGenerator>, Error> {
+    EmbeddingGeneratorBuilder::default().build().map(Arc::new)
+}
 
-    let embedder = EmbeddingGeneratorBuilder::default().build().map(Arc::new)?;
-
+fn create_conversation(
+    _config: &Config,
+    embedder: Arc<EmbeddingGenerator>,
+) -> Result<Conversation, Error> {
     Conversation::builder().with_embedder(embedder).build()
 }
 
@@ -139,7 +143,8 @@ async fn main() -> Result<(), Error> {
     let mut client = create_client(&settings, event_sender.clone()).await?;
     let mut tui = crate::tui::Tui::new(&settings, event_sender.clone())?;
 
-    let mut conversation = create_conversation(&settings)?;
+    let embedder = create_embedder(&settings)?;
+    let mut conversation = create_conversation(&settings, embedder)?;
     let mut input_text = String::new();
     let mut input_cursor = usize::default();
 
