@@ -13,9 +13,6 @@ use rmcp::{
     schemars, tool,
 };
 
-#[derive(serde::Deserialize, schemars::JsonSchema)]
-pub struct ListFilesRequest {}
-
 /// Request parameters for the get_vault_structure function
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct GetVaultStructureRequest {
