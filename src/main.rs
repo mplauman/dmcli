@@ -122,8 +122,9 @@ async fn create_client(
 
 fn create_conversation(_config: &Config) -> Result<Conversation, Error> {
     use crate::embeddings::EmbeddingGeneratorBuilder;
+    use std::sync::Arc;
 
-    let embedder = EmbeddingGeneratorBuilder::default().build()?;
+    let embedder = EmbeddingGeneratorBuilder::default().build().map(Arc::new)?;
 
     Conversation::builder().with_embedder(embedder).build()
 }

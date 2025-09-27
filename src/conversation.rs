@@ -1,5 +1,6 @@
 use crate::embeddings::EmbeddingGenerator;
 use crate::errors::Error;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use serde_json::Value;
@@ -123,7 +124,7 @@ impl std::fmt::Display for Message {
 pub struct Conversation {
     id: SystemTime,
     messages: Vec<Message>,
-    embedder: EmbeddingGenerator,
+    embedder: Arc<EmbeddingGenerator>,
 }
 
 impl Conversation {
@@ -297,7 +298,7 @@ impl<'a> IntoIterator for &'a Conversation {
 
 #[derive(Default)]
 pub struct ConversationBuilder {
-    embedder: Option<EmbeddingGenerator>,
+    embedder: Option<Arc<EmbeddingGenerator>>,
 }
 
 impl ConversationBuilder {
@@ -305,21 +306,22 @@ impl ConversationBuilder {
     ///
     /// # Arguments
     ///
-    /// * `embedder` - An instance of EmbeddingGenerator
+    /// * `embedder` - An Arc-wrapped instance of EmbeddingGenerator
     ///
     /// # Example
     ///
     /// ```rust
     /// use dmcli::embeddings::EmbeddingGeneratorBuilder;
     /// use dmcli::conversation::ConversationBuilder;
+    /// use std::sync::Arc;
     ///
-    /// let embedder = EmbeddingGeneratorBuilder::default().build().unwrap();
+    /// let embedder = Arc::new(EmbeddingGeneratorBuilder::default().build().unwrap());
     /// let conversation = ConversationBuilder::default()
     ///     .with_embedder(embedder)
     ///     .build()
     ///     .unwrap();
     /// ```
-    pub fn with_embedder(self, embedder: EmbeddingGenerator) -> Self {
+    pub fn with_embedder(self, embedder: Arc<EmbeddingGenerator>) -> Self {
         Self {
             embedder: Some(embedder),
         }
@@ -350,6 +352,7 @@ mod tests {
         let embedder = crate::embeddings::EmbeddingGeneratorBuilder::default()
             .with_cache_dir(temp_dir.path())
             .build()
+            .map(Arc::new)
             .unwrap();
         ConversationBuilder::default()
             .with_embedder(embedder)
@@ -556,10 +559,12 @@ mod tests {
         assert!(!cache_path.join("config.json").exists());
 
         // Build conversation with custom cache directory
-        let embedder = crate::embeddings::EmbeddingGeneratorBuilder::default()
-            .with_cache_dir(cache_path)
-            .build()
-            .unwrap();
+        let embedder = Arc::new(
+            crate::embeddings::EmbeddingGeneratorBuilder::default()
+                .with_cache_dir(cache_path)
+                .build()
+                .unwrap(),
+        );
         let _conversation = ConversationBuilder::default()
             .with_embedder(embedder)
             .build()
@@ -578,5 +583,44 @@ mod tests {
         assert!(!tokenizer_content.is_empty());
         assert!(!model_content.is_empty());
         assert!(!config_content.is_empty());
+    }
+
+    #[test]
+    fn test_shared_embedder() {
+        use std::sync::Arc;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let embedder = Arc::new(
+            crate::embeddings::EmbeddingGeneratorBuilder::default()
+                .with_cache_dir(temp_dir.path())
+                .build()
+                .unwrap(),
+        );
+
+        // Create multiple conversations sharing the same embedder
+        let mut conversation1 = ConversationBuilder::default()
+            .with_embedder(Arc::clone(&embedder))
+            .build()
+            .unwrap();
+
+        let mut conversation2 = ConversationBuilder::default()
+            .with_embedder(Arc::clone(&embedder))
+            .build()
+            .unwrap();
+
+        // Add messages to both conversations
+        conversation1.user("Hello from conversation 1");
+        conversation2.user("Hello from conversation 2");
+
+        // Verify both conversations work independently
+        assert_eq!(conversation1.messages.len(), 1);
+        assert_eq!(conversation2.messages.len(), 1);
+
+        // Verify they can both use the embedder
+        let related1 = conversation1.related(0, "hello", 5);
+        let related2 = conversation2.related(0, "hello", 5);
+
+        assert_eq!(related1.len(), 1);
+        assert_eq!(related2.len(), 1);
     }
 }
