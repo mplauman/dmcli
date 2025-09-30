@@ -682,7 +682,6 @@ dependencies = [
  "crossterm 0.29.0",
  "dirs",
  "futures",
- "hf-hub",
  "ignore",
  "llm",
  "log",

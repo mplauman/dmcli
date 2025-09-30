@@ -124,7 +124,7 @@ impl std::fmt::Display for Message {
 pub struct Conversation {
     id: SystemTime,
     messages: Vec<Message>,
-    embedder: Arc<EmbeddingGenerator>,
+    embedder: Arc<dyn EmbeddingGenerator>,
 }
 
 impl Conversation {
@@ -298,7 +298,7 @@ impl<'a> IntoIterator for &'a Conversation {
 
 #[derive(Default)]
 pub struct ConversationBuilder {
-    embedder: Option<Arc<EmbeddingGenerator>>,
+    embedder: Option<Arc<dyn EmbeddingGenerator>>,
 }
 
 impl ConversationBuilder {
@@ -321,7 +321,7 @@ impl ConversationBuilder {
     ///     .build()
     ///     .unwrap();
     /// ```
-    pub fn with_embedder(self, embedder: Arc<EmbeddingGenerator>) -> Self {
+    pub fn with_embedder(self, embedder: Arc<dyn EmbeddingGenerator>) -> Self {
         Self {
             embedder: Some(embedder),
         }
@@ -345,15 +345,13 @@ impl ConversationBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::embeddings::EmbeddingGenerator;
+    use crate::embeddings::TestEmbedder;
+    use std::sync::Arc;
 
     /// Helper method to create a new conversation for testing
     fn create_test_conversation() -> Conversation {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let embedder = crate::embeddings::EmbeddingGeneratorBuilder::default()
-            .with_cache_dir(temp_dir.path())
-            .build()
-            .map(Arc::new)
-            .unwrap();
+        let embedder: Arc<dyn EmbeddingGenerator> = Arc::new(TestEmbedder {});
         ConversationBuilder::default()
             .with_embedder(embedder)
             .build()
@@ -549,53 +547,8 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_directory_configuration() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let cache_path = temp_dir.path();
-
-        // Verify the cache directory is empty initially
-        assert!(!cache_path.join("tokenizer.json").exists());
-        assert!(!cache_path.join("model.safetensors").exists());
-        assert!(!cache_path.join("config.json").exists());
-
-        // Build conversation with custom cache directory
-        let embedder = Arc::new(
-            crate::embeddings::EmbeddingGeneratorBuilder::default()
-                .with_cache_dir(cache_path)
-                .build()
-                .unwrap(),
-        );
-        let _conversation = ConversationBuilder::default()
-            .with_embedder(embedder)
-            .build()
-            .unwrap();
-
-        // Verify model files were created in the specified cache directory
-        assert!(cache_path.join("tokenizer.json").exists());
-        assert!(cache_path.join("model.safetensors").exists());
-        assert!(cache_path.join("config.json").exists());
-
-        // Verify files have content
-        let tokenizer_content = std::fs::read(cache_path.join("tokenizer.json")).unwrap();
-        let model_content = std::fs::read(cache_path.join("model.safetensors")).unwrap();
-        let config_content = std::fs::read(cache_path.join("config.json")).unwrap();
-
-        assert!(!tokenizer_content.is_empty());
-        assert!(!model_content.is_empty());
-        assert!(!config_content.is_empty());
-    }
-
-    #[test]
     fn test_shared_embedder() {
-        use std::sync::Arc;
-
-        let temp_dir = tempfile::tempdir().unwrap();
-        let embedder = Arc::new(
-            crate::embeddings::EmbeddingGeneratorBuilder::default()
-                .with_cache_dir(temp_dir.path())
-                .build()
-                .unwrap(),
-        );
+        let embedder: Arc<dyn EmbeddingGenerator> = Arc::new(TestEmbedder {});
 
         // Create multiple conversations sharing the same embedder
         let mut conversation1 = ConversationBuilder::default()
