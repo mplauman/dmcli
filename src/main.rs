@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::anthropic::Client;
 use crate::commands::DmCommand;
 use crate::conversation::Conversation;
-use crate::embeddings::{EmbeddingGenerator, EmbeddingGeneratorBuilder};
+use crate::embeddings::{EmbeddingGenerator, Model2VecEmbeddingGeneratorBuilder};
 use crate::errors::Error;
 use crate::events::AppEvent;
 use crate::input::InputHandler;
@@ -122,13 +122,32 @@ async fn create_client(
     builder.build().await
 }
 
-fn create_embedder(_config: &Config) -> Result<Arc<EmbeddingGenerator>, Error> {
-    EmbeddingGeneratorBuilder::default().build().map(Arc::new)
+fn create_embedder(config: &Config) -> Result<Arc<dyn EmbeddingGenerator>, Error> {
+    let mut builder = Model2VecEmbeddingGeneratorBuilder::default();
+
+    if let Ok(repo) = config.get_string("embedder.repo") {
+        log::info!("Overriding embedder model to {repo}");
+        builder = builder.repo(repo);
+    }
+
+    if let Ok(token) = config.get_string("embedder.token") {
+        log::info!("Applying huggingface token");
+        builder = builder.token(token)
+    }
+
+    if let Ok(subfolder) = config.get_string("embedder.subfolder") {
+        log::info!("Using embedder from subfolder {subfolder}");
+        builder = builder.subfolder(subfolder);
+    }
+
+    let result: Arc<dyn EmbeddingGenerator> = builder.build().map(Arc::new)?;
+
+    Ok(result)
 }
 
 fn create_conversation(
     _config: &Config,
-    embedder: Arc<EmbeddingGenerator>,
+    embedder: Arc<dyn EmbeddingGenerator>,
 ) -> Result<Conversation, Error> {
     Conversation::builder().with_embedder(embedder).build()
 }
@@ -138,15 +157,17 @@ async fn main() -> Result<(), Error> {
     let settings = load_settings()?;
     init_logging(&settings)?;
 
-    let (event_sender, event_receiver) = async_channel::unbounded::<AppEvent>();
-    let mut input_handler = InputHandler::new(event_sender.clone())?;
-    let mut client = create_client(&settings, event_sender.clone()).await?;
-    let mut tui = crate::tui::Tui::new(&settings, event_sender.clone())?;
-
     let embedder = create_embedder(&settings)?;
     let mut conversation = create_conversation(&settings, embedder)?;
     let mut input_text = String::new();
     let mut input_cursor = usize::default();
+
+    let (event_sender, event_receiver) = async_channel::unbounded::<AppEvent>();
+    let mut client = create_client(&settings, event_sender.clone()).await?;
+
+    // Do as much as possible before these: they set the terminal into raw mode
+    let mut input_handler = InputHandler::new(event_sender.clone())?;
+    let mut tui = crate::tui::Tui::new(&settings, event_sender.clone())?;
 
     tokio::spawn(async move {
         loop {
