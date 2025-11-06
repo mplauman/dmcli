@@ -72,11 +72,11 @@ pub enum Message {
     Thinking {
         id: Id,
         content: String,
-        tools: Vec<(String, String, Value)>,
+        tools: Vec<ToolCall>,
     },
     ThinkingDone {
         id: Id,
-        tools: Vec<(String, String, String, Vec<f32>)>,
+        tools: Vec<(ToolResult, Vec<f32>)>,
     },
     System {
         id: Id,
@@ -86,6 +86,19 @@ pub enum Message {
         id: Id,
         content: String,
     },
+}
+
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub parameters: Value,
+}
+
+#[derive(Clone)]
+pub struct ToolResult {
+    pub id: String,
+    pub name: String,
+    pub result: String,
 }
 
 impl std::fmt::Display for Message {
@@ -164,7 +177,7 @@ impl Conversation {
     pub fn thinking(
         &mut self,
         content: impl Into<String>,
-        tools: impl IntoIterator<Item = (String, String, Value)>,
+        tools: impl IntoIterator<Item = ToolCall>,
     ) {
         self.messages.push(Message::Thinking {
             id: Id::new(self.id),
@@ -173,16 +186,15 @@ impl Conversation {
         });
     }
 
-    pub fn thinking_done(&mut self, tools: impl IntoIterator<Item = (String, String, String)>) {
+    pub fn thinking_done(&mut self, tools: impl IntoIterator<Item = ToolResult>) {
         self.messages.push(Message::ThinkingDone {
             id: Id::new(self.id),
             tools: tools
                 .into_iter()
                 .map(|t| {
-                    let content = t.2;
-                    let encoding = self.encode(&content);
+                    let encoding = self.encode(&t.result);
 
-                    (t.0, t.1, content, encoding)
+                    (t, encoding)
                 })
                 .collect(),
         });
@@ -213,7 +225,7 @@ impl Conversation {
                 Message::Thinking { .. } => continue,
                 Message::ThinkingDone { tools, .. } => tools
                     .iter()
-                    .map(|t| self.embedder.distance(&target, &t.3))
+                    .map(|t| self.embedder.distance(&target, &t.1))
                     .collect(),
                 Message::System { .. } => continue,
                 Message::Error { .. } => continue,
@@ -369,7 +381,7 @@ mod tests {
                     // For testing purposes, return a summary of tool outputs
                     tools
                         .iter()
-                        .map(|(_, _, content, _)| content.as_str())
+                        .map(|(tool_result, _)| tool_result.result.as_str())
                         .collect::<Vec<_>>()
                         .join("; ")
                 }
@@ -458,16 +470,16 @@ mod tests {
         let mut conversation = create_test_conversation();
         conversation.user("User message");
         conversation.thinking_done(vec![
-            (
-                "tool1".to_string(),
-                "name1".to_string(),
-                "Tool output 1".to_string(),
-            ),
-            (
-                "tool2".to_string(),
-                "name2".to_string(),
-                "Tool output 2".to_string(),
-            ),
+            ToolResult {
+                id: "tool1".to_string(),
+                name: "name1".to_string(),
+                result: "Tool output 1".to_string(),
+            },
+            ToolResult {
+                id: "tool2".to_string(),
+                name: "name2".to_string(),
+                result: "Tool output 2".to_string(),
+            },
         ]);
 
         let related = conversation.related(0, "tool output", 10);

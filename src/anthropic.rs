@@ -97,7 +97,9 @@ impl Client {
                 },
                 Message::ThinkingDone { tools, .. } => ChatMessage {
                     role: ChatRole::User,
-                    message_type: LlmMessageType::ToolResult(to_tool_result(tools)),
+                    message_type: LlmMessageType::ToolResult(to_tool_result(
+                        tools.iter().map(|t| &t.0),
+                    )),
                     content: String::new(),
                 },
                 Message::System { .. } => continue,
@@ -123,7 +125,9 @@ impl Client {
                 .map(|msg| match msg {
                     Message::User { content, .. } => format!("- user: {content}"),
                     Message::Assistant { content, .. } => format!(" - assistant: {content}"),
-                    Message::ThinkingDone { tools, .. } => format!(" - tool: {}", tools[0].2),
+                    Message::ThinkingDone { tools, .. } => {
+                        format!(" - tool: {}", tools[0].0.result)
+                    }
                     _ => panic!("Unexpected message type included in 'related' messages"),
                 })
                 .filter(|c| c != content) // Skip exact matches
@@ -153,29 +157,32 @@ impl Client {
     }
 }
 
-fn to_tool_use(tools: &[(String, String, serde_json::Value)]) -> Vec<ToolCall> {
+fn to_tool_use(tools: &[crate::conversation::ToolCall]) -> Vec<llm::ToolCall> {
     tools
         .iter()
-        .map(|(id, name, parameters)| ToolCall {
-            id: id.clone(),
+        .map(|tc| llm::ToolCall {
+            id: tc.id.clone(),
             call_type: "function".into(),
             function: FunctionCall {
-                name: name.clone(),
-                arguments: serde_json::to_string(parameters).expect("parameters can be serialized"),
+                name: tc.name.clone(),
+                arguments: serde_json::to_string(&tc.parameters)
+                    .expect("parameters can be serialized"),
             },
         })
         .collect()
 }
 
-fn to_tool_result(results: &[(String, String, String, Vec<f32>)]) -> Vec<ToolCall> {
+fn to_tool_result<'a>(
+    results: impl IntoIterator<Item = &'a crate::conversation::ToolResult>,
+) -> Vec<llm::ToolCall> {
     results
-        .iter()
-        .map(|(id, name, result, _)| ToolCall {
-            id: id.clone(),
+        .into_iter()
+        .map(|tr| llm::ToolCall {
+            id: tr.id.clone(),
             call_type: "function".into(),
             function: FunctionCall {
-                name: name.clone(),
-                arguments: result.clone(),
+                name: tr.name.clone(),
+                arguments: tr.result.clone(),
             },
         })
         .collect()
@@ -234,16 +241,8 @@ impl InnerClient {
         };
 
         let message = response.text().unwrap_or_default();
-        let tools: Vec<(String, String, serde_json::Value)> = tool_calls
-            .iter()
-            .map(|tc| {
-                let params: serde_json::Value = serde_json::from_str(&tc.function.arguments)
-                    .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()));
-                (tc.id.clone(), tc.function.name.clone(), params)
-            })
-            .collect();
 
-        self.send_app_event(AppEvent::AiThinking(message, tools));
+        self.send_app_event(AppEvent::AiThinking(message, tool_calls.clone()));
         self.send_internal_action(ClientAction::UseTools(messages, tool_calls));
 
         Ok(())
@@ -285,17 +284,7 @@ impl InnerClient {
         });
         let tool_results = future::join_all(tool_futures).await;
 
-        let ui_results: Vec<(String, String, String)> = tool_results
-            .iter()
-            .map(|t| {
-                (
-                    t.id.clone(),
-                    t.function.name.clone(),
-                    t.function.arguments.clone(),
-                )
-            })
-            .collect();
-        self.send_app_event(AppEvent::AiThinkingDone(ui_results));
+        self.send_app_event(AppEvent::AiThinkingDone(tool_results.clone()));
 
         messages.push(ChatMessage {
             role: ChatRole::Assistant,

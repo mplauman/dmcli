@@ -214,9 +214,26 @@ async fn main() -> Result<(), Error> {
                 tui.reset_scroll();
             }
             AppEvent::AiThinking(msg, tools) => {
+                let tools = tools.into_iter().map(|tc| {
+                    let params: serde_json::Value = serde_json::from_str(&tc.function.arguments)
+                        .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()));
+
+                    crate::conversation::ToolCall {
+                        id: tc.id,
+                        name: tc.function.name,
+                        parameters: params,
+                    }
+                });
+
                 conversation.thinking(format!("🤔 {msg}"), tools);
             }
             AppEvent::AiThinkingDone(tools) => {
+                let tools = tools.into_iter().map(|tr| crate::conversation::ToolResult {
+                    id: tr.id,
+                    name: tr.function.name,
+                    result: tr.function.arguments,
+                });
+
                 conversation.thinking_done(tools);
             }
             AppEvent::AiError(msg) => {
