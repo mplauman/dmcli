@@ -145,7 +145,7 @@ impl Conversation {
         ConversationBuilder::default()
     }
 
-    pub fn user(&mut self, content: impl Into<String>) {
+    pub async fn user(&mut self, content: impl Into<String>) {
         let content = content.into();
         let encoding = self.encode(&content);
 
@@ -156,7 +156,7 @@ impl Conversation {
         });
     }
 
-    pub fn assistant(&mut self, content: impl Into<String>) {
+    pub async fn assistant(&mut self, content: impl Into<String>) {
         let content = content.into();
         let encoding = self.encode(&content);
 
@@ -167,14 +167,14 @@ impl Conversation {
         });
     }
 
-    pub fn system(&mut self, content: impl Into<String>) {
+    pub async fn system(&mut self, content: impl Into<String>) {
         self.messages.push(Message::System {
             id: Id::new(self.id),
             content: content.into(),
         });
     }
 
-    pub fn thinking(
+    pub async fn thinking(
         &mut self,
         content: impl Into<String>,
         tools: impl IntoIterator<Item = ToolCall>,
@@ -186,7 +186,7 @@ impl Conversation {
         });
     }
 
-    pub fn thinking_done(&mut self, tools: impl IntoIterator<Item = ToolResult>) {
+    pub async fn thinking_done(&mut self, tools: impl IntoIterator<Item = ToolResult>) {
         self.messages.push(Message::ThinkingDone {
             id: Id::new(self.id),
             tools: tools
@@ -200,7 +200,7 @@ impl Conversation {
         });
     }
 
-    pub fn error(&mut self, content: impl Into<String>) {
+    pub async fn error(&mut self, content: impl Into<String>) {
         self.messages.push(Message::Error {
             id: Id::new(self.id),
             content: content.into(),
@@ -211,7 +211,7 @@ impl Conversation {
         self.embedder.encode(content)
     }
 
-    pub fn related(&self, skip: usize, content: &str, max: usize) -> Vec<Message> {
+    pub async fn related(&self, skip: usize, content: &str, max: usize) -> Vec<Message> {
         let target = self.encode(content);
 
         let mut heap = std::collections::BinaryHeap::new();
@@ -390,12 +390,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_into_iterator_implementation() {
+    #[tokio::test]
+    async fn test_into_iterator_implementation() {
         let mut conversation = create_test_conversation();
-        conversation.user("Hello");
-        conversation.assistant("Hi there!");
-        conversation.system("Connection established");
+        conversation.user("Hello").await;
+        conversation.assistant("Hi there!").await;
+        conversation.system("Connection established").await;
 
         let messages: Vec<&Message> = (&conversation).into_iter().collect();
 
@@ -409,49 +409,49 @@ mod tests {
         assert_eq!(count, 3);
     }
 
-    #[test]
-    fn test_related_empty_conversation() {
+    #[tokio::test]
+    async fn test_related_empty_conversation() {
         let conversation = create_test_conversation();
-        let related = conversation.related(0, "test query", 5);
+        let related = conversation.related(0, "test query", 5).await;
         assert_eq!(related.len(), 0);
     }
 
-    #[test]
-    fn test_related_max_zero() {
+    #[tokio::test]
+    async fn test_related_max_zero() {
         let mut conversation = create_test_conversation();
-        conversation.user("Hello world");
-        conversation.assistant("Hi there");
+        conversation.user("Hello world").await;
+        conversation.assistant("Hi there").await;
 
-        let related = conversation.related(0, "greeting", 0);
+        let related = conversation.related(0, "greeting", 0).await;
         assert_eq!(related.len(), 0);
     }
 
-    #[test]
-    fn test_related_respects_max_limit() {
+    #[tokio::test]
+    async fn test_related_respects_max_limit() {
         let mut conversation = create_test_conversation();
-        conversation.user("First message");
-        conversation.assistant("First response");
-        conversation.user("Second message");
-        conversation.assistant("Second response");
-        conversation.user("Third message");
+        conversation.user("First message").await;
+        conversation.assistant("First response").await;
+        conversation.user("Second message").await;
+        conversation.assistant("Second response").await;
+        conversation.user("Third message").await;
 
-        let related = conversation.related(0, "message", 3);
+        let related = conversation.related(0, "message", 3).await;
         assert!(related.len() <= 3);
 
-        let related = conversation.related(0, "message", 2);
+        let related = conversation.related(0, "message", 2).await;
         assert!(related.len() <= 2);
     }
 
-    #[test]
-    fn test_related_only_includes_rankable_messages() {
+    #[tokio::test]
+    async fn test_related_only_includes_rankable_messages() {
         let mut conversation = create_test_conversation();
-        conversation.user("User message");
-        conversation.assistant("Assistant message");
-        conversation.system("System message");
-        conversation.error("Error message");
-        conversation.thinking("Thinking content", vec![]);
+        conversation.user("User message").await;
+        conversation.assistant("Assistant message").await;
+        conversation.system("System message").await;
+        conversation.error("Error message").await;
+        conversation.thinking("Thinking content", vec![]).await;
 
-        let related = conversation.related(0, "message", 10);
+        let related = conversation.related(0, "message", 10).await;
 
         // Should only include User and Assistant messages (2 total)
         // System, Error, and Thinking messages should be excluded
@@ -465,24 +465,26 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_related_includes_thinking_done_tools() {
+    #[tokio::test]
+    async fn test_related_includes_thinking_done_tools() {
         let mut conversation = create_test_conversation();
-        conversation.user("User message");
-        conversation.thinking_done(vec![
-            ToolResult {
-                id: "tool1".to_string(),
-                name: "name1".to_string(),
-                result: "Tool output 1".to_string(),
-            },
-            ToolResult {
-                id: "tool2".to_string(),
-                name: "name2".to_string(),
-                result: "Tool output 2".to_string(),
-            },
-        ]);
+        conversation.user("User message").await;
+        conversation
+            .thinking_done(vec![
+                ToolResult {
+                    id: "tool1".to_string(),
+                    name: "name1".to_string(),
+                    result: "Tool output 1".to_string(),
+                },
+                ToolResult {
+                    id: "tool2".to_string(),
+                    name: "name2".to_string(),
+                    result: "Tool output 2".to_string(),
+                },
+            ])
+            .await;
 
-        let related = conversation.related(0, "tool output", 10);
+        let related = conversation.related(0, "tool output", 10).await;
 
         // Should include the user message plus potentially both tool outputs
         assert!(!related.is_empty());
@@ -495,16 +497,16 @@ mod tests {
         assert!(has_thinking_done);
     }
 
-    #[test]
-    fn test_related_message_content_preserved() {
+    #[tokio::test]
+    async fn test_related_message_content_preserved() {
         let mut conversation = create_test_conversation();
         let user_content = "Hello world";
         let assistant_content = "Hi there friend";
 
-        conversation.user(user_content);
-        conversation.assistant(assistant_content);
+        conversation.user(user_content).await;
+        conversation.assistant(assistant_content).await;
 
-        let related = conversation.related(0, "hello", 10);
+        let related = conversation.related(0, "hello", 10).await;
 
         assert_eq!(related.len(), 2);
 
@@ -514,21 +516,21 @@ mod tests {
         assert!(contents.contains(&assistant_content.to_string()));
     }
 
-    #[test]
-    fn test_related_different_similarities() {
+    #[tokio::test]
+    async fn test_related_different_similarities() {
         let mut conversation = create_test_conversation();
 
         // Add messages with different expected similarities to "cat"
-        conversation.user("I love cats and dogs"); // Should be most similar
-        conversation.assistant("The weather is nice today"); // Should be least similar
-        conversation.user("My cat is very fluffy"); // Should be very similar
+        conversation.user("I love cats and dogs").await; // Should be most similar
+        conversation.assistant("The weather is nice today").await; // Should be least similar
+        conversation.user("My cat is very fluffy").await; // Should be very similar
 
-        let related = conversation.related(0, "cat", 10);
+        let related = conversation.related(0, "cat", 10).await;
         assert_eq!(related.len(), 3);
 
         // This depends on the model, but searching for the top two messages with
         // `cat` should only include the messages with cat in them.
-        let related = conversation.related(0, "cat", 2);
+        let related = conversation.related(0, "cat", 2).await;
         assert_eq!(
             related
                 .into_iter()
@@ -538,13 +540,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_related_preserves_message_ids() {
+    #[tokio::test]
+    async fn test_related_preserves_message_ids() {
         let mut conversation = create_test_conversation();
-        conversation.user("First message");
-        conversation.assistant("Response");
+        conversation.user("First message").await;
+        conversation.assistant("Response").await;
 
-        let related = conversation.related(0, "message", 10);
+        let related = conversation.related(0, "message", 10).await;
 
         // Each message should have a valid ID
         for message in related {
@@ -558,8 +560,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_shared_embedder() {
+    #[tokio::test]
+    async fn test_shared_embedder() {
         let embedder: Arc<dyn EmbeddingGenerator> = Arc::new(TestEmbedder {});
 
         // Create multiple conversations sharing the same embedder
@@ -574,16 +576,16 @@ mod tests {
             .unwrap();
 
         // Add messages to both conversations
-        conversation1.user("Hello from conversation 1");
-        conversation2.user("Hello from conversation 2");
+        conversation1.user("Hello from conversation 1").await;
+        conversation2.user("Hello from conversation 2").await;
 
         // Verify both conversations work independently
         assert_eq!(conversation1.messages.len(), 1);
         assert_eq!(conversation2.messages.len(), 1);
 
         // Verify they can both use the embedder
-        let related1 = conversation1.related(0, "hello", 5);
-        let related2 = conversation2.related(0, "hello", 5);
+        let related1 = conversation1.related(0, "hello", 5).await;
+        let related2 = conversation2.related(0, "hello", 5).await;
 
         assert_eq!(related1.len(), 1);
         assert_eq!(related2.len(), 1);
