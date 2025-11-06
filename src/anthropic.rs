@@ -74,7 +74,7 @@ impl Drop for Client {
 }
 
 impl Client {
-    pub fn push(&mut self, conversation: &Conversation) -> Result<(), Error> {
+    pub async fn push(&mut self, conversation: &Conversation) -> Result<(), Error> {
         // Capacity: 5 desired, plus maybe 1 for tool use, plus related, plus a summary
         let mut messages = Vec::with_capacity(8);
 
@@ -121,6 +121,7 @@ impl Client {
         let related = if let Some(Message::User { content, .. }) = conversation.into_iter().next() {
             let related = conversation
                 .related(messages.len(), content, 10)
+                .await
                 .into_iter()
                 .map(|msg| match msg {
                     Message::User { content, .. } => format!("- user: {content}"),
