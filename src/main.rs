@@ -122,7 +122,7 @@ async fn create_client(
     builder.build().await
 }
 
-fn create_embedder(config: &Config) -> Result<Arc<dyn EmbeddingGenerator>, Error> {
+fn create_embedder(config: &Config) -> Result<Arc<impl EmbeddingGenerator>, Error> {
     let mut builder = Model2VecEmbeddingGeneratorBuilder::default();
 
     if let Ok(repo) = config.get_string("embedder.repo") {
@@ -140,15 +140,15 @@ fn create_embedder(config: &Config) -> Result<Arc<dyn EmbeddingGenerator>, Error
         builder = builder.subfolder(subfolder);
     }
 
-    let result: Arc<dyn EmbeddingGenerator> = builder.build().map(Arc::new)?;
+    let result = builder.build().map(Arc::new)?;
 
     Ok(result)
 }
 
 fn create_conversation(
     _config: &Config,
-    embedder: Arc<dyn EmbeddingGenerator>,
-) -> Result<Conversation, Error> {
+    embedder: Arc<impl EmbeddingGenerator>,
+) -> Result<Conversation<impl EmbeddingGenerator>, Error> {
     Conversation::builder().with_embedder(embedder).build()
 }
 
