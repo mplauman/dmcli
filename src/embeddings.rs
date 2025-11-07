@@ -155,16 +155,6 @@ impl EmbeddingGenerator for TestEmbedder {
 
         Ok(result)
     }
-
-    fn distance(&self, a: &Embedding, b: &Embedding) -> f32 {
-        // Simple Euclidean distance calculation
-        if a.len() != 2 || b.len() != 2 {
-            return f32::MAX;
-        }
-        let dx = a[0] - b[0];
-        let dy = a[1] - b[1];
-        (dx * dx + dy * dy).sqrt()
-    }
 }
 
 #[cfg(test)]
@@ -181,12 +171,13 @@ mod tests {
         let embedding = generator.encode("test text").await.unwrap();
         let embedding2 = generator.encode("Goodbye world").await.unwrap();
         assert_ne!(embedding, embedding2);
+
+        test_similarity_calculation(&generator).await;
+        test_distance_calculation(&generator).await;
+        test_similarity_is_symmetric(&generator).await;
     }
 
-    #[tokio::test]
-    async fn test_similarity_calculation() {
-        let generator = TestEmbedder {};
-
+    async fn test_similarity_calculation(generator: &Model2VecEmbeddingGenerator) {
         let embedding1 = generator.encode("cat").await.unwrap();
         let embedding2 = generator.encode("kitten").await.unwrap();
         let embedding3 = generator.encode("car").await.unwrap();
@@ -198,10 +189,7 @@ mod tests {
         assert!(sim_cat_kitten > sim_cat_car);
     }
 
-    #[tokio::test]
-    async fn test_distance_calculation() {
-        let generator = TestEmbedder {};
-
+    async fn test_distance_calculation(generator: &Model2VecEmbeddingGenerator) {
         let embedding1 = generator.encode("dog").await.unwrap();
         let embedding2 = generator.encode("puppy").await.unwrap();
         let embedding3 = generator.encode("airplane").await.unwrap();
@@ -213,10 +201,7 @@ mod tests {
         assert!(dist_dog_puppy < dist_dog_airplane);
     }
 
-    #[tokio::test]
-    async fn test_similarity_is_symmetric() {
-        let generator = TestEmbedder {};
-
+    async fn test_similarity_is_symmetric(generator: &Model2VecEmbeddingGenerator) {
         let embedding1 = generator.encode("hello").await.unwrap();
         let embedding2 = generator.encode("world").await.unwrap();
 

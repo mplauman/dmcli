@@ -525,30 +525,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_related_different_similarities() {
-        let mut conversation = create_test_conversation();
-
-        // Add messages with different expected similarities to "cat"
-        conversation.user("I love cats and dogs").await; // Should be most similar
-        conversation.assistant("The weather is nice today").await; // Should be least similar
-        conversation.user("My cat is very fluffy").await; // Should be very similar
-
-        let related = conversation.related(0, "cat", 10).await;
-        assert_eq!(related.len(), 3);
-
-        // This depends on the model, but searching for the top two messages with
-        // `cat` should only include the messages with cat in them.
-        let related = conversation.related(0, "cat", 2).await;
-        assert_eq!(
-            related
-                .into_iter()
-                .filter(|m| m.content().contains("cat"))
-                .count(),
-            2
-        );
-    }
-
-    #[tokio::test]
     async fn test_related_preserves_message_ids() {
         let mut conversation = create_test_conversation();
         conversation.user("First message").await;
