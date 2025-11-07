@@ -1,4 +1,5 @@
 use crate::conversation::{Conversation, Message};
+use crate::embeddings::EmbeddingGenerator;
 use crate::errors::Error;
 use crate::events::AppEvent;
 use futures::{FutureExt, future};
@@ -74,7 +75,10 @@ impl Drop for Client {
 }
 
 impl Client {
-    pub async fn push(&mut self, conversation: &Conversation) -> Result<(), Error> {
+    pub async fn push(
+        &mut self,
+        conversation: &Conversation<impl EmbeddingGenerator>,
+    ) -> Result<(), Error> {
         // Capacity: 5 desired, plus maybe 1 for tool use, plus related, plus a summary
         let mut messages = Vec::with_capacity(8);
 

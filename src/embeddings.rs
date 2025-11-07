@@ -1,6 +1,9 @@
 use crate::errors::Error;
 use model2vec_rs::model::StaticModel;
 
+pub const EMBEDDING_DIMS: usize = 256;
+pub type Embedding = [f32; EMBEDDING_DIMS];
+
 pub trait EmbeddingGenerator {
     /// Encodes a single text string into a vector embedding
     ///
@@ -11,7 +14,8 @@ pub trait EmbeddingGenerator {
     /// # Returns
     ///
     /// A vector of f32 values representing the text embedding
-    fn encode(&self, text: &str) -> Vec<f32>;
+    #[allow(async_fn_in_trait)]
+    async fn encode(&self, text: &str) -> Result<Embedding, Error>;
 
     /// Computes the cosine similarity between two embeddings
     ///
@@ -23,7 +27,7 @@ pub trait EmbeddingGenerator {
     /// # Returns
     ///
     /// A similarity score between 0.0 and 1.0, where 1.0 is most similar
-    fn similarity(&self, a: &[f32], b: &[f32]) -> f32 {
+    fn similarity(&self, a: &Embedding, b: &Embedding) -> f32 {
         // For normalized vectors, cosine similarity is just the dot product
         a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
     }
@@ -38,7 +42,7 @@ pub trait EmbeddingGenerator {
     /// # Returns
     ///
     /// A distance score between 0.0 and 2.0, where 0.0 is most similar
-    fn distance(&self, a: &[f32], b: &[f32]) -> f32 {
+    fn distance(&self, a: &Embedding, b: &Embedding) -> f32 {
         1.0 - self.similarity(a, b)
     }
 }
@@ -71,8 +75,12 @@ pub struct Model2VecEmbeddingGenerator {
 }
 
 impl EmbeddingGenerator for Model2VecEmbeddingGenerator {
-    fn encode(&self, text: &str) -> Vec<f32> {
-        self.model.encode_single(text)
+    async fn encode(&self, text: &str) -> Result<Embedding, Error> {
+        Ok(self
+            .model
+            .encode_single(text)
+            .try_into()
+            .expect("embeddings are the correct size"))
     }
 }
 
@@ -133,24 +141,19 @@ pub struct TestEmbedder;
 
 #[cfg(test)]
 impl EmbeddingGenerator for TestEmbedder {
-    fn encode(&self, text: &str) -> Vec<f32> {
+    async fn encode(&self, text: &str) -> Result<Embedding, Error> {
         // Simple encoding that just counts vowels and consonants
         let vowels = text.chars().filter(|c| "aeiou".contains(*c)).count() as f32;
         let consonants = text
             .chars()
             .filter(|c| c.is_alphabetic() && !"aeiou".contains(*c))
             .count() as f32;
-        vec![vowels, consonants]
-    }
 
-    fn distance(&self, a: &[f32], b: &[f32]) -> f32 {
-        // Simple Euclidean distance calculation
-        if a.len() != 2 || b.len() != 2 {
-            return f32::MAX;
-        }
-        let dx = a[0] - b[0];
-        let dy = a[1] - b[1];
-        (dx * dx + dy * dy).sqrt()
+        let mut result = [0.0; EMBEDDING_DIMS];
+        result[0] = vowels;
+        result[1] = consonants;
+
+        Ok(result)
     }
 }
 
@@ -158,27 +161,26 @@ impl EmbeddingGenerator for TestEmbedder {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_model2vec_embedding_generator() {
+    #[tokio::test]
+    async fn test_model2vec_embedding_generator() {
         let generator = Model2VecEmbeddingGeneratorBuilder::default()
             .build()
             .unwrap();
 
-        let embedding = generator.encode("test text");
-        assert!(!embedding.is_empty());
-
         // Different texts should produce different embeddings
-        let embedding2 = generator.encode("Goodbye world");
+        let embedding = generator.encode("test text").await.unwrap();
+        let embedding2 = generator.encode("Goodbye world").await.unwrap();
         assert_ne!(embedding, embedding2);
+
+        test_similarity_calculation(&generator).await;
+        test_distance_calculation(&generator).await;
+        test_similarity_is_symmetric(&generator).await;
     }
 
-    #[test]
-    fn test_similarity_calculation() {
-        let generator = TestEmbedder {};
-
-        let embedding1 = generator.encode("cat");
-        let embedding2 = generator.encode("kitten");
-        let embedding3 = generator.encode("car");
+    async fn test_similarity_calculation(generator: &Model2VecEmbeddingGenerator) {
+        let embedding1 = generator.encode("cat").await.unwrap();
+        let embedding2 = generator.encode("kitten").await.unwrap();
+        let embedding3 = generator.encode("car").await.unwrap();
 
         let sim_cat_kitten = generator.similarity(&embedding1, &embedding2);
         let sim_cat_car = generator.similarity(&embedding1, &embedding3);
@@ -187,13 +189,10 @@ mod tests {
         assert!(sim_cat_kitten > sim_cat_car);
     }
 
-    #[test]
-    fn test_distance_calculation() {
-        let generator = TestEmbedder {};
-
-        let embedding1 = generator.encode("dog");
-        let embedding2 = generator.encode("puppy");
-        let embedding3 = generator.encode("airplane");
+    async fn test_distance_calculation(generator: &Model2VecEmbeddingGenerator) {
+        let embedding1 = generator.encode("dog").await.unwrap();
+        let embedding2 = generator.encode("puppy").await.unwrap();
+        let embedding3 = generator.encode("airplane").await.unwrap();
 
         let dist_dog_puppy = generator.distance(&embedding1, &embedding2);
         let dist_dog_airplane = generator.distance(&embedding1, &embedding3);
@@ -202,12 +201,9 @@ mod tests {
         assert!(dist_dog_puppy < dist_dog_airplane);
     }
 
-    #[test]
-    fn test_similarity_is_symmetric() {
-        let generator = TestEmbedder {};
-
-        let embedding1 = generator.encode("hello");
-        let embedding2 = generator.encode("world");
+    async fn test_similarity_is_symmetric(generator: &Model2VecEmbeddingGenerator) {
+        let embedding1 = generator.encode("hello").await.unwrap();
+        let embedding2 = generator.encode("world").await.unwrap();
 
         let sim1 = generator.similarity(&embedding1, &embedding2);
         let sim2 = generator.similarity(&embedding2, &embedding1);

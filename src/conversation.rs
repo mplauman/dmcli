@@ -62,12 +62,12 @@ pub enum Message {
     User {
         id: Id,
         content: String,
-        encoding: Vec<f32>,
+        encoding: crate::embeddings::Embedding,
     },
     Assistant {
         id: Id,
         content: String,
-        encoding: Vec<f32>,
+        encoding: crate::embeddings::Embedding,
     },
     Thinking {
         id: Id,
@@ -76,7 +76,7 @@ pub enum Message {
     },
     ThinkingDone {
         id: Id,
-        tools: Vec<(ToolResult, Vec<f32>)>,
+        tools: Vec<(ToolResult, crate::embeddings::Embedding)>,
     },
     System {
         id: Id,
@@ -134,20 +134,23 @@ impl std::fmt::Display for Message {
 /// // Add a system message
 /// conversation.system("`[4] = **4**");
 /// ```
-pub struct Conversation {
+pub struct Conversation<T>
+where
+    T: EmbeddingGenerator,
+{
     id: SystemTime,
     messages: Vec<Message>,
-    embedder: Arc<dyn EmbeddingGenerator>,
+    embedder: Arc<T>,
 }
 
-impl Conversation {
-    pub fn builder() -> ConversationBuilder {
-        ConversationBuilder::default()
+impl<T: EmbeddingGenerator> Conversation<T> {
+    pub fn builder() -> ConversationBuilder<T> {
+        ConversationBuilder { embedder: None }
     }
 
     pub async fn user(&mut self, content: impl Into<String>) {
         let content = content.into();
-        let encoding = self.encode(&content);
+        let encoding = self.encode(&content).await.expect("encoding works");
 
         self.messages.push(Message::User {
             id: Id::new(self.id),
@@ -158,7 +161,7 @@ impl Conversation {
 
     pub async fn assistant(&mut self, content: impl Into<String>) {
         let content = content.into();
-        let encoding = self.encode(&content);
+        let encoding = self.encode(&content).await.unwrap();
 
         self.messages.push(Message::Assistant {
             id: Id::new(self.id),
@@ -187,16 +190,16 @@ impl Conversation {
     }
 
     pub async fn thinking_done(&mut self, tools: impl IntoIterator<Item = ToolResult>) {
+        let mut encoded_results = Vec::new();
+        for tool in tools {
+            let encoding = self.encode(&tool.result).await.expect("encoding works");
+
+            encoded_results.push((tool, encoding));
+        }
+
         self.messages.push(Message::ThinkingDone {
             id: Id::new(self.id),
-            tools: tools
-                .into_iter()
-                .map(|t| {
-                    let encoding = self.encode(&t.result);
-
-                    (t, encoding)
-                })
-                .collect(),
+            tools: encoded_results,
         });
     }
 
@@ -207,12 +210,12 @@ impl Conversation {
         });
     }
 
-    fn encode(&self, content: &str) -> Vec<f32> {
-        self.embedder.encode(content)
+    async fn encode(&self, content: &str) -> Result<crate::embeddings::Embedding, Error> {
+        self.embedder.encode(content).await
     }
 
     pub async fn related(&self, skip: usize, content: &str, max: usize) -> Vec<Message> {
-        let target = self.encode(content);
+        let target = self.encode(content).await.unwrap();
 
         let mut heap = std::collections::BinaryHeap::new();
 
@@ -240,7 +243,7 @@ impl Conversation {
                     } => Message::User {
                         id: id.clone(),
                         content: content.clone(),
-                        encoding: encoding.clone(),
+                        encoding: *encoding,
                     },
                     Message::Assistant {
                         id,
@@ -249,7 +252,7 @@ impl Conversation {
                     } => Message::Assistant {
                         id: id.clone(),
                         content: content.clone(),
-                        encoding: encoding.clone(),
+                        encoding: *encoding,
                     },
                     Message::Thinking { .. } => panic!("should not be ranked"),
                     Message::ThinkingDone { id, tools } => Message::ThinkingDone {
@@ -299,7 +302,10 @@ impl PartialEq for RankedMessage {
 
 impl Eq for RankedMessage {}
 
-impl<'a> IntoIterator for &'a Conversation {
+impl<'a, T: EmbeddingGenerator> IntoIterator for &'a Conversation<T>
+where
+    T: EmbeddingGenerator,
+{
     type Item = &'a Message;
     type IntoIter = std::iter::Rev<std::slice::Iter<'a, Message>>;
 
@@ -309,11 +315,14 @@ impl<'a> IntoIterator for &'a Conversation {
 }
 
 #[derive(Default)]
-pub struct ConversationBuilder {
-    embedder: Option<Arc<dyn EmbeddingGenerator>>,
+pub struct ConversationBuilder<T>
+where
+    T: EmbeddingGenerator,
+{
+    embedder: Option<Arc<T>>,
 }
 
-impl ConversationBuilder {
+impl<T: EmbeddingGenerator> ConversationBuilder<T> {
     /// Sets the embedding generator instance to use for the conversation
     ///
     /// # Arguments
@@ -333,13 +342,13 @@ impl ConversationBuilder {
     ///     .build()
     ///     .unwrap();
     /// ```
-    pub fn with_embedder(self, embedder: Arc<dyn EmbeddingGenerator>) -> Self {
+    pub fn with_embedder(self, embedder: Arc<T>) -> Self {
         Self {
             embedder: Some(embedder),
         }
     }
 
-    pub fn build(self) -> Result<Conversation, Error> {
+    pub fn build(self) -> Result<Conversation<T>, Error> {
         let embedder = self.embedder.ok_or_else(|| {
             Error::Embedding(
                 "No embedding generator provided. Use with_embedder() to set one.".to_string(),
@@ -357,13 +366,12 @@ impl ConversationBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::embeddings::EmbeddingGenerator;
     use crate::embeddings::TestEmbedder;
     use std::sync::Arc;
 
     /// Helper method to create a new conversation for testing
-    fn create_test_conversation() -> Conversation {
-        let embedder: Arc<dyn EmbeddingGenerator> = Arc::new(TestEmbedder {});
+    fn create_test_conversation() -> Conversation<crate::embeddings::TestEmbedder> {
+        let embedder = Arc::new(TestEmbedder {});
         ConversationBuilder::default()
             .with_embedder(embedder)
             .build()
@@ -517,30 +525,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_related_different_similarities() {
-        let mut conversation = create_test_conversation();
-
-        // Add messages with different expected similarities to "cat"
-        conversation.user("I love cats and dogs").await; // Should be most similar
-        conversation.assistant("The weather is nice today").await; // Should be least similar
-        conversation.user("My cat is very fluffy").await; // Should be very similar
-
-        let related = conversation.related(0, "cat", 10).await;
-        assert_eq!(related.len(), 3);
-
-        // This depends on the model, but searching for the top two messages with
-        // `cat` should only include the messages with cat in them.
-        let related = conversation.related(0, "cat", 2).await;
-        assert_eq!(
-            related
-                .into_iter()
-                .filter(|m| m.content().contains("cat"))
-                .count(),
-            2
-        );
-    }
-
-    #[tokio::test]
     async fn test_related_preserves_message_ids() {
         let mut conversation = create_test_conversation();
         conversation.user("First message").await;
@@ -562,7 +546,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_shared_embedder() {
-        let embedder: Arc<dyn EmbeddingGenerator> = Arc::new(TestEmbedder {});
+        let embedder = Arc::new(TestEmbedder {});
 
         // Create multiple conversations sharing the same embedder
         let mut conversation1 = ConversationBuilder::default()

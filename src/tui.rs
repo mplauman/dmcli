@@ -1,4 +1,5 @@
 use crate::conversation::{Conversation, Id, Message};
+use crate::embeddings::EmbeddingGenerator;
 use crate::errors::Error;
 use crate::events::AppEvent;
 use crate::markdown::MarkdownRenderer;
@@ -58,7 +59,7 @@ impl Tui {
 
     pub fn render(
         &mut self,
-        conversation: &Conversation,
+        conversation: &Conversation<impl EmbeddingGenerator>,
         input: &str,
         cursor: usize,
     ) -> Result<(), Error> {
