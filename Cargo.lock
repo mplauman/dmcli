@@ -1541,9 +1541,9 @@ dependencies = [
 
 [[package]]
 name = "libsql"
-version = "0.9.24"
+version = "0.9.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a76ffc6aaaac50c1362ebd22f7db457336ab4ee72ee115aaea11f47edf9d7720"
+checksum = "1872c72dd9f50f53c83100066da9f81584c5702e5e806d243468ad986ba2c8a6"
 dependencies = [
  "async-trait",
  "bitflags",
@@ -1557,9 +1557,9 @@ dependencies = [
 
 [[package]]
 name = "libsql-ffi"
-version = "0.9.24"
+version = "0.9.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aaaa869a3c33a125231e8963f7890dae9c6de1ce4133e68121467203896203a0"
+checksum = "8cf139ef358790f799b325cc3801888f11f0077599bab284aff63f5b96669f91"
 dependencies = [
  "bindgen",
  "cc",
@@ -1569,9 +1569,9 @@ dependencies = [
 
 [[package]]
 name = "libsql-sys"
-version = "0.9.24"
+version = "0.9.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b075329f2ea5a8dc2c61b0d92ec095f823505954e1413c0a5220b40b0e4b0083"
+checksum = "eaadd08c5c2c3bfee29b5f10b6d5175bf0233fc1e7f9d0ed33fa35c254da6601"
 dependencies = [
  "bytes",
  "libsql-ffi",
