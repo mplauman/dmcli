@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::anthropic::Client;
 use crate::commands::DmCommand;
 use crate::conversation::Conversation;
+use crate::database::Database;
 use crate::embeddings::{EmbeddingGenerator, Model2VecEmbeddingGeneratorBuilder};
 use crate::errors::Error;
 use crate::events::AppEvent;
@@ -13,6 +14,7 @@ use crate::input::InputHandler;
 mod anthropic;
 mod commands;
 mod conversation;
+mod database;
 mod embeddings;
 mod errors;
 mod events;
@@ -145,11 +147,23 @@ fn create_embedder(config: &Config) -> Result<Arc<impl EmbeddingGenerator>, Erro
     Ok(result)
 }
 
-fn create_conversation(
+async fn create_database(_config: &Config) -> Result<Database, Error> {
+    // Create temporary file database (schema is initialized automatically)
+    Database::builder().build().await
+}
+
+async fn create_conversation(
     _config: &Config,
     embedder: Arc<impl EmbeddingGenerator>,
+    db: &Database,
 ) -> Result<Conversation<impl EmbeddingGenerator>, Error> {
-    Conversation::builder().with_embedder(embedder).build()
+    let conn = db.connect()?;
+
+    Conversation::builder()
+        .with_embedder(embedder)
+        .with_connection(conn)
+        .build()
+        .await
 }
 
 #[tokio::main]
@@ -158,7 +172,8 @@ async fn main() -> Result<(), Error> {
     init_logging(&settings)?;
 
     let embedder = create_embedder(&settings)?;
-    let mut conversation = create_conversation(&settings, embedder)?;
+    let db = create_database(&settings).await?;
+    let mut conversation = create_conversation(&settings, embedder, &db).await?;
     let mut input_text = String::new();
     let mut input_cursor = usize::default();
 

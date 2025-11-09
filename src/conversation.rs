@@ -1,8 +1,9 @@
-use crate::embeddings::EmbeddingGenerator;
+use crate::embeddings::{EMBEDDING_DIMS, EmbeddingGenerator};
 use crate::errors::Error;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::database::Connection;
 use serde_json::Value;
 
 /// A unique identifier for a message in a conversation
@@ -140,11 +141,15 @@ where
     last_message: Instant,
     messages: Vec<Message>,
     embedder: Arc<T>,
+    connection: Connection,
 }
 
 impl<T: EmbeddingGenerator> Conversation<T> {
     pub fn builder() -> ConversationBuilder<T> {
-        ConversationBuilder { embedder: None }
+        ConversationBuilder {
+            embedder: None,
+            connection: None,
+        }
     }
 
     fn next_message_id(&self) -> Id {
@@ -162,6 +167,33 @@ impl<T: EmbeddingGenerator> Conversation<T> {
         let content = content.into();
         let encoding = self.encode(&content).await.unwrap();
         let id = self.next_message_id();
+
+        let conversation_timestamp: u64 = id
+            .conversation
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("this works")
+            .as_millis()
+            .try_into()
+            .expect("not too big");
+        let message_offset: u64 = id.offset.as_millis().try_into().expect("not too big");
+
+        let p = encoding.as_ptr() as *mut u8;
+        let len = encoding.len() * std::mem::size_of::<f32>();
+
+        let raw_encoding = unsafe { std::slice::from_raw_parts(p, len) };
+
+        self.connection.execute(
+            "INSERT INTO messages(conversation_timestamp, message_offset, message_type, content, encoding) VALUES(?, ?, ?, ?, ?)",
+            libsql::params![
+                conversation_timestamp,
+                message_offset,
+                "user",
+                content.as_str(),
+                raw_encoding,
+            ]
+        )
+        .await
+        .expect("message insertion into in-memory database works");
 
         self.messages.push(Message::User {
             id,
@@ -331,6 +363,7 @@ where
     T: EmbeddingGenerator,
 {
     embedder: Option<Arc<T>>,
+    connection: Option<Connection>,
 }
 
 impl<T: EmbeddingGenerator> ConversationBuilder<T> {
@@ -356,21 +389,66 @@ impl<T: EmbeddingGenerator> ConversationBuilder<T> {
     pub fn with_embedder(self, embedder: Arc<T>) -> Self {
         Self {
             embedder: Some(embedder),
+            connection: self.connection,
         }
     }
 
-    pub fn build(self) -> Result<Conversation<T>, Error> {
+    /// Sets the database connection to use for the conversation
+    ///
+    /// # Arguments
+    ///
+    /// * `connection` - A Turso Connection instance for database operations
+    pub fn with_connection(self, connection: Connection) -> Self {
+        Self {
+            embedder: self.embedder,
+            connection: Some(connection),
+        }
+    }
+
+    pub async fn build(self) -> Result<Conversation<T>, Error> {
         let embedder = self.embedder.ok_or_else(|| {
             Error::Embedding(
                 "No embedding generator provided. Use with_embedder() to set one.".to_string(),
             )
         })?;
 
+        let connection = self.connection.ok_or_else(|| {
+            Error::Embedding(
+                "No connection provided. Use with_connection() to set one.".to_string(),
+            )
+        })?;
+
+        connection
+            .execute(
+                &format!(
+                    "CREATE TABLE IF NOT EXISTS messages (
+                    conversation_timestamp INTEGER NOT NULL,
+                    message_offset INTEGER NOT NULL,
+                    message_type TEXT NOT NULL,
+                    content TEXT,
+                    encoding F32_BLOB({EMBEDDING_DIMS}),
+                    tools TEXT,
+                    PRIMARY KEY (conversation_timestamp, message_offset)
+                )"
+                ),
+                (),
+            )
+            .await
+            .expect("Messages table can be created");
+
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS messages_encoding_idx ON messages (libsql_vector_idx(encoding))",
+            (),
+        )
+        .await
+        .expect("Messages index can be created");
+
         Ok(Conversation {
             id: SystemTime::now(),
             last_message: Instant::now(),
             messages: Vec::new(),
             embedder,
+            connection,
         })
     }
 }
@@ -382,11 +460,15 @@ mod tests {
     use std::sync::Arc;
 
     /// Helper method to create a new conversation for testing
-    fn create_test_conversation() -> Conversation<crate::embeddings::TestEmbedder> {
+    async fn create_test_conversation() -> Conversation<crate::embeddings::TestEmbedder> {
         let embedder = Arc::new(TestEmbedder {});
+        let db = crate::database::Database::new().await;
+        let conn = db.connect().unwrap();
         ConversationBuilder::default()
             .with_embedder(embedder)
+            .with_connection(conn)
             .build()
+            .await
             .unwrap()
     }
 
@@ -412,7 +494,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_into_iterator_implementation() {
-        let mut conversation = create_test_conversation();
+        let mut conversation = create_test_conversation().await;
         conversation.user("Hello").await;
         conversation.assistant("Hi there!").await;
         conversation.system("Connection established").await;
@@ -431,14 +513,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_related_empty_conversation() {
-        let conversation = create_test_conversation();
+        let conversation = create_test_conversation().await;
         let related = conversation.related(0, "test query", 5).await;
         assert_eq!(related.len(), 0);
     }
 
     #[tokio::test]
     async fn test_related_max_zero() {
-        let mut conversation = create_test_conversation();
+        let mut conversation = create_test_conversation().await;
         conversation.user("Hello world").await;
         conversation.assistant("Hi there").await;
 
@@ -448,7 +530,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_related_respects_max_limit() {
-        let mut conversation = create_test_conversation();
+        let mut conversation = create_test_conversation().await;
         conversation.user("First message").await;
         conversation.assistant("First response").await;
         conversation.user("Second message").await;
@@ -464,7 +546,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_related_only_includes_rankable_messages() {
-        let mut conversation = create_test_conversation();
+        let mut conversation = create_test_conversation().await;
         conversation.user("User message").await;
         conversation.assistant("Assistant message").await;
         conversation.system("System message").await;
@@ -487,7 +569,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_related_includes_thinking_done_tools() {
-        let mut conversation = create_test_conversation();
+        let mut conversation = create_test_conversation().await;
         conversation.user("User message").await;
         conversation
             .thinking_done(vec![
@@ -519,7 +601,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_related_message_content_preserved() {
-        let mut conversation = create_test_conversation();
+        let mut conversation = create_test_conversation().await;
         let user_content = "Hello world";
         let assistant_content = "Hi there friend";
 
@@ -538,7 +620,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_related_preserves_message_ids() {
-        let mut conversation = create_test_conversation();
+        let mut conversation = create_test_conversation().await;
         conversation.user("First message").await;
         conversation.assistant("Response").await;
 
@@ -559,16 +641,22 @@ mod tests {
     #[tokio::test]
     async fn test_shared_embedder() {
         let embedder = Arc::new(TestEmbedder {});
+        let db = crate::database::Database::new().await;
 
-        // Create multiple conversations sharing the same embedder
-        let mut conversation1 = ConversationBuilder::default()
+        let conn1 = db.connect().unwrap();
+        let mut conversation1 = Conversation::builder()
             .with_embedder(Arc::clone(&embedder))
+            .with_connection(conn1)
             .build()
+            .await
             .unwrap();
 
-        let mut conversation2 = ConversationBuilder::default()
+        let conn2 = db.connect().unwrap();
+        let mut conversation2 = Conversation::builder()
             .with_embedder(Arc::clone(&embedder))
+            .with_connection(conn2)
             .build()
+            .await
             .unwrap();
 
         // Add messages to both conversations
@@ -585,5 +673,32 @@ mod tests {
 
         assert_eq!(related1.len(), 1);
         assert_eq!(related2.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_messages_table_exists() {
+        let conversation = create_test_conversation().await;
+        let conn = conversation.connection;
+
+        // Query the sqlite_master table to check if messages table exists
+        // This uses a raw Turso query since we don't have a query wrapper yet
+        let mut rows = conn
+            .query(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'",
+                (),
+            )
+            .await
+            .unwrap();
+
+        // Should find exactly one row with the messages table
+        let row = rows.next().await.unwrap().unwrap();
+        let table_name = match row.get_value(0).unwrap() {
+            libsql::Value::Text(s) => s,
+            _ => panic!("Expected text value for table name"),
+        };
+        assert_eq!(table_name, "messages");
+
+        // Verify no more rows
+        assert!(rows.next().await.unwrap().is_none());
     }
 }
