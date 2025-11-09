@@ -1,7 +1,7 @@
 use crate::embeddings::EmbeddingGenerator;
 use crate::errors::Error;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::Value;
 
@@ -14,16 +14,14 @@ use serde_json::Value;
 #[derive(Hash, PartialEq, Eq, Clone)]
 pub struct Id {
     conversation: SystemTime,
-    timestamp: Duration,
+    offset: Duration,
 }
 
 impl Id {
-    fn new(conversation: SystemTime) -> Self {
+    fn new(conversation: SystemTime, offset: Duration) -> Self {
         Self {
             conversation,
-            timestamp: SystemTime::now()
-                .duration_since(conversation)
-                .expect("timestamp math works"),
+            offset,
         }
     }
 }
@@ -32,7 +30,7 @@ impl std::fmt::Display for Id {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let timestamp = self
             .conversation
-            .checked_add(self.timestamp)
+            .checked_add(self.offset)
             .expect("time is reasonable");
 
         write!(f, "{timestamp:?}")
@@ -139,6 +137,7 @@ where
     T: EmbeddingGenerator,
 {
     id: SystemTime,
+    last_message: Instant,
     messages: Vec<Message>,
     embedder: Arc<T>,
 }
@@ -148,12 +147,24 @@ impl<T: EmbeddingGenerator> Conversation<T> {
         ConversationBuilder { embedder: None }
     }
 
+    fn next_message_id(&self) -> Id {
+        let mut offset = self.last_message.elapsed();
+        while offset.as_millis() == 0 {
+            std::thread::yield_now();
+
+            offset = self.last_message.elapsed();
+        }
+
+        Id::new(self.id, offset)
+    }
+
     pub async fn user(&mut self, content: impl Into<String>) {
         let content = content.into();
-        let encoding = self.encode(&content).await.expect("encoding works");
+        let encoding = self.encode(&content).await.unwrap();
+        let id = self.next_message_id();
 
         self.messages.push(Message::User {
-            id: Id::new(self.id),
+            id,
             content,
             encoding,
         });
@@ -164,7 +175,7 @@ impl<T: EmbeddingGenerator> Conversation<T> {
         let encoding = self.encode(&content).await.unwrap();
 
         self.messages.push(Message::Assistant {
-            id: Id::new(self.id),
+            id: self.next_message_id(),
             content,
             encoding,
         });
@@ -172,7 +183,7 @@ impl<T: EmbeddingGenerator> Conversation<T> {
 
     pub async fn system(&mut self, content: impl Into<String>) {
         self.messages.push(Message::System {
-            id: Id::new(self.id),
+            id: self.next_message_id(),
             content: content.into(),
         });
     }
@@ -183,7 +194,7 @@ impl<T: EmbeddingGenerator> Conversation<T> {
         tools: impl IntoIterator<Item = ToolCall>,
     ) {
         self.messages.push(Message::Thinking {
-            id: Id::new(self.id),
+            id: self.next_message_id(),
             content: content.into(),
             tools: tools.into_iter().collect(),
         });
@@ -198,14 +209,14 @@ impl<T: EmbeddingGenerator> Conversation<T> {
         }
 
         self.messages.push(Message::ThinkingDone {
-            id: Id::new(self.id),
+            id: self.next_message_id(),
             tools: encoded_results,
         });
     }
 
     pub async fn error(&mut self, content: impl Into<String>) {
         self.messages.push(Message::Error {
-            id: Id::new(self.id),
+            id: self.next_message_id(),
             content: content.into(),
         });
     }
@@ -357,6 +368,7 @@ impl<T: EmbeddingGenerator> ConversationBuilder<T> {
 
         Ok(Conversation {
             id: SystemTime::now(),
+            last_message: Instant::now(),
             messages: Vec::new(),
             embedder,
         })
