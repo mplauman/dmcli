@@ -191,7 +191,7 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    conversation.system("Welcome to dmcli! Type your message and press Enter to send. Send 'roll 2d6' to roll a dice or 'exit' to quit.").await;
+    conversation.system("Welcome to dmcli! Type your message and press Enter to send. Send 'roll 2d6' to roll a dice or 'exit' to quit.").await?;
 
     tui.render(&conversation, &input_text, input_cursor)?;
     while let Ok(event) = event_receiver.recv().await {
@@ -199,23 +199,25 @@ async fn main() -> Result<(), Error> {
 
         match event {
             AppEvent::UserCommand(DmCommand::Exit {}) => {
-                conversation.system("Good bye!").await;
+                conversation.system("Good bye!").await?;
                 break;
             }
             AppEvent::UserCommand(DmCommand::Reset {}) => {
-                conversation.system("Conversation reset (not really)").await;
+                conversation
+                    .system("Conversation reset (not really)")
+                    .await?;
             }
             AppEvent::UserCommand(DmCommand::Roll { expressions }) => {
                 let result = caith::Roller::new(&expressions.join(" "))
                     .unwrap()
                     .roll()
                     .unwrap();
-                conversation.system(format!("🎲 {result}")).await;
+                conversation.system(format!("🎲 {result}")).await?;
                 tui.reset_scroll();
             }
             AppEvent::UserAgent(line) => {
                 if !line.is_empty() {
-                    conversation.user(&line).await;
+                    conversation.user(&line).await?;
                     tui.reset_scroll();
                     client.push(&conversation).await?;
                 }
@@ -225,7 +227,7 @@ async fn main() -> Result<(), Error> {
                 break;
             }
             AppEvent::AiResponse(msg) => {
-                conversation.assistant(&msg).await;
+                conversation.assistant(&msg).await?;
                 tui.reset_scroll();
             }
             AppEvent::AiThinking(msg, tools) => {
@@ -240,7 +242,7 @@ async fn main() -> Result<(), Error> {
                     }
                 });
 
-                conversation.thinking(format!("🤔 {msg}"), tools).await;
+                conversation.thinking(format!("🤔 {msg}"), tools).await?;
             }
             AppEvent::AiThinkingDone(tools) => {
                 let tools = tools.into_iter().map(|tr| crate::conversation::ToolResult {
@@ -249,10 +251,10 @@ async fn main() -> Result<(), Error> {
                     result: tr.function.arguments,
                 });
 
-                conversation.thinking_done(tools).await;
+                conversation.thinking_done(tools).await?;
             }
             AppEvent::AiError(msg) => {
-                conversation.error(format!("❌ {msg}")).await;
+                conversation.error(format!("❌ {msg}")).await?;
                 tui.reset_scroll();
             }
             AppEvent::InputUpdated { line, cursor } => {
