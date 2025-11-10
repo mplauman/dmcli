@@ -12,7 +12,7 @@ use serde_json::Value;
 ///
 /// * `conversation` - The system time when the conversation started
 /// * `timestamp` - The duration since the conversation start when this message was created
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Id {
     conversation: SystemTime,
     offset: Duration,
@@ -85,6 +85,19 @@ pub enum Message {
         id: Id,
         content: String,
     },
+}
+
+impl Message {
+    fn get_id(&self) -> &Id {
+        match self {
+            Message::User { id, .. } => id,
+            Message::Assistant { id, .. } => id,
+            Message::Thinking { id, .. } => id,
+            Message::ThinkingDone { id, .. } => id,
+            Message::System { id, .. } => id,
+            Message::Error { id, .. } => id,
+        }
+    }
 }
 
 pub struct ToolCall {
@@ -166,18 +179,11 @@ impl<T: EmbeddingGenerator> Conversation<T> {
     async fn save_embedding(
         &self,
         id: &Id,
-        index: usize,
+        tool_index: Option<usize>,
         embedding: &Embedding,
     ) -> Result<(), Error> {
-        let conversation_timestamp: u64 = id
-            .conversation
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("this works")
-            .as_millis()
-            .try_into()
-            .expect("not too big");
-        let message_offset: u64 = id.offset.as_millis().try_into().expect("not too big");
-        let index: u64 = index.try_into().expect("index is not too huge");
+        let id = serde_json::to_string(id).unwrap();
+        let tool_index: u64 = tool_index.unwrap_or(0).try_into().unwrap();
 
         let embedding = unsafe {
             let p = embedding.as_ptr() as *mut u8;
@@ -186,16 +192,12 @@ impl<T: EmbeddingGenerator> Conversation<T> {
             std::slice::from_raw_parts(p, len)
         };
 
-        self.connection.execute(
-            "INSERT INTO messages(conversation_timestamp, message_offset, idx, embedding) VALUES(?, ?, ?, ?)",
-            libsql::params![
-                conversation_timestamp,
-                message_offset,
-                index,
-                embedding,
-            ]
-        )
-        .await?;
+        self.connection
+            .execute(
+                "INSERT INTO messages(id, tool_index, embedding) VALUES(?, ?, ?)",
+                libsql::params![id, tool_index, embedding,],
+            )
+            .await?;
 
         Ok(())
     }
@@ -205,7 +207,7 @@ impl<T: EmbeddingGenerator> Conversation<T> {
         let encoding = self.encode(&content).await?;
         let id = self.next_message_id();
 
-        self.save_embedding(&id, 0, &encoding).await?;
+        self.save_embedding(&id, None, &encoding).await?;
 
         self.messages.push(Message::User {
             id,
@@ -221,7 +223,7 @@ impl<T: EmbeddingGenerator> Conversation<T> {
         let encoding = self.encode(&content).await?;
         let id = self.next_message_id();
 
-        self.save_embedding(&id, 0, &encoding).await?;
+        self.save_embedding(&id, None, &encoding).await?;
 
         self.messages.push(Message::Assistant {
             id,
@@ -265,7 +267,7 @@ impl<T: EmbeddingGenerator> Conversation<T> {
         for (idx, tool) in tools.into_iter().enumerate() {
             let encoding = self.encode(&tool.result).await?;
 
-            self.save_embedding(&id, idx, &encoding).await?;
+            self.save_embedding(&id, Some(idx), &encoding).await?;
 
             encoded_results.push((tool, encoding));
         }
@@ -293,91 +295,81 @@ impl<T: EmbeddingGenerator> Conversation<T> {
 
     pub async fn related(&self, skip: usize, content: &str, max: usize) -> Vec<Message> {
         let target = self.encode(content).await.unwrap();
+        let to_fetch: u64 = (skip + max).try_into().expect("skip not too huge");
 
-        let mut heap = std::collections::BinaryHeap::new();
+        let mut rows = self
+            .connection
+            .query(
+                "SELECT id, tool_index FROM messages ORDER BY vector_distance_cos(embedding, ?) ASC LIMIT ?",
+                libsql::params![
+                    unsafe {
+                        let p = target.as_ptr() as *mut u8;
+                        let len = target.len() * std::mem::size_of::<f32>();
 
-        for message in self.into_iter().skip(skip) {
-            let distances = match message {
-                Message::User { encoding, .. } => vec![self.embedder.distance(&target, encoding)],
-                Message::Assistant { encoding, .. } => {
-                    vec![self.embedder.distance(&target, encoding)]
-                }
-                Message::Thinking { .. } => continue,
-                Message::ThinkingDone { tools, .. } => tools
-                    .iter()
-                    .map(|t| self.embedder.distance(&target, &t.1))
-                    .collect(),
-                Message::System { .. } => continue,
-                Message::Error { .. } => continue,
+                        std::slice::from_raw_parts(p, len)
+                    },
+                    to_fetch,
+                ],
+            )
+            .await
+            .unwrap();
+
+        let mut results = Vec::new();
+        let mut skipped = 0;
+        while let Some(row) = rows.next().await.unwrap() {
+            if skipped < skip {
+                skipped += 1;
+                continue;
+            }
+
+            let id: &str = row.get_str(0).unwrap();
+            let id: Id = serde_json::from_str(id).unwrap();
+
+            let tool_index: u64 = row.get(1).unwrap();
+            let tool_index: usize = tool_index.try_into().unwrap();
+
+            let Some(message) = self
+                .messages
+                .iter()
+                .find(|candidate| *candidate.get_id() == id)
+            else {
+                continue;
             };
 
-            for (i, distance) in distances.into_iter().enumerate() {
-                let message = match message {
-                    Message::User {
-                        id,
-                        content,
-                        encoding,
-                    } => Message::User {
-                        id: id.clone(),
-                        content: content.clone(),
-                        encoding: *encoding,
-                    },
-                    Message::Assistant {
-                        id,
-                        content,
-                        encoding,
-                    } => Message::Assistant {
-                        id: id.clone(),
-                        content: content.clone(),
-                        encoding: *encoding,
-                    },
-                    Message::Thinking { .. } => panic!("should not be ranked"),
-                    Message::ThinkingDone { id, tools } => Message::ThinkingDone {
-                        id: id.clone(),
-                        tools: vec![tools[i].clone()],
-                    },
-                    Message::System { .. } => panic!("should not be ranked"),
-                    Message::Error { .. } => panic!("should not be ranked"),
-                };
+            let message = match message {
+                Message::User {
+                    id,
+                    content,
+                    encoding,
+                } => Message::User {
+                    id: id.clone(),
+                    content: content.clone(),
+                    encoding: *encoding,
+                },
+                Message::Assistant {
+                    id,
+                    content,
+                    encoding,
+                } => Message::Assistant {
+                    id: id.clone(),
+                    content: content.clone(),
+                    encoding: *encoding,
+                },
+                Message::Thinking { .. } => panic!("Thinking messages shouldn't get indexed"),
+                Message::ThinkingDone { id, tools } => Message::ThinkingDone {
+                    id: id.clone(),
+                    tools: vec![(tools[tool_index].0.clone(), tools[tool_index].1)],
+                },
+                Message::System { .. } => panic!("System messages shouldn't get indexed"),
+                Message::Error { .. } => panic!("Error messages shouldn't get indexed"),
+            };
 
-                heap.push(RankedMessage { message, distance });
-            }
-
-            while heap.len() > max {
-                heap.pop();
-            }
+            results.push(message);
         }
 
-        heap.into_iter()
-            .map(|r| r.message)
-            .collect::<Vec<Message>>()
+        results
     }
 }
-
-struct RankedMessage {
-    message: Message,
-    distance: f32,
-}
-
-impl Ord for RankedMessage {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.distance.partial_cmp(&other.distance).unwrap()
-    }
-}
-
-impl PartialOrd for RankedMessage {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl PartialEq for RankedMessage {
-    fn eq(&self, other: &Self) -> bool {
-        self.distance == other.distance
-    }
-}
-
-impl Eq for RankedMessage {}
 
 impl<'a, T: EmbeddingGenerator> IntoIterator for &'a Conversation<T>
 where
@@ -456,11 +448,10 @@ impl<T: EmbeddingGenerator> ConversationBuilder<T> {
             .execute(
                 &format!(
                     "CREATE TABLE IF NOT EXISTS messages (
-                       conversation_timestamp INTEGER NOT NULL,
-                       message_offset INTEGER NOT NULL,
-                       idx INTEGER NOT NULL,
+                       id TEXT NOT NULL,
+                       tool_index INTEGER NOT NULL,
                        embedding F32_BLOB({EMBEDDING_DIMS}),
-                       PRIMARY KEY (conversation_timestamp, message_offset, idx)
+                       PRIMARY KEY (id, tool_index)
                      )"
                 ),
                 (),
