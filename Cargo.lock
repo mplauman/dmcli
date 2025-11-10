@@ -693,7 +693,7 @@ dependencies = [
  "ratatui",
  "regex",
  "reqwest",
- "rmcp",
+ "rmcp 0.8.5",
  "rmcp-in-process-transport",
  "serde",
  "serde_json",
@@ -2361,6 +2361,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "rmcp"
+version = "0.8.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5947688160b56fb6c827e3c20a72c90392a1d7e9dec74749197aa1780ac42ca"
+dependencies = [
+ "chrono",
+ "futures",
+ "pin-project-lite",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "rmcp-in-process-transport"
 version = "0.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2368,7 +2385,7 @@ checksum = "b586a19aece5dd3a97f68b73436a94180d66a2d5594c1ad71a3096a97b6c2f3b"
 dependencies = [
  "futures",
  "pin-project-lite",
- "rmcp",
+ "rmcp 0.1.5",
  "tokio",
  "tracing",
 ]
