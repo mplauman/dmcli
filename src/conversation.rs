@@ -1,8 +1,9 @@
-use crate::embeddings::EmbeddingGenerator;
+use crate::embeddings::{EMBEDDING_DIMS, Embedding, EmbeddingGenerator};
 use crate::errors::Error;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::database::Connection;
 use serde_json::Value;
 
 /// A unique identifier for a message in a conversation
@@ -11,7 +12,7 @@ use serde_json::Value;
 ///
 /// * `conversation` - The system time when the conversation started
 /// * `timestamp` - The duration since the conversation start when this message was created
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Id {
     conversation: SystemTime,
     offset: Duration,
@@ -60,12 +61,10 @@ pub enum Message {
     User {
         id: Id,
         content: String,
-        encoding: crate::embeddings::Embedding,
     },
     Assistant {
         id: Id,
         content: String,
-        encoding: crate::embeddings::Embedding,
     },
     Thinking {
         id: Id,
@@ -74,7 +73,7 @@ pub enum Message {
     },
     ThinkingDone {
         id: Id,
-        tools: Vec<(ToolResult, crate::embeddings::Embedding)>,
+        tools: Vec<ToolResult>,
     },
     System {
         id: Id,
@@ -84,6 +83,19 @@ pub enum Message {
         id: Id,
         content: String,
     },
+}
+
+impl Message {
+    fn get_id(&self) -> &Id {
+        match self {
+            Message::User { id, .. } => id,
+            Message::Assistant { id, .. } => id,
+            Message::Thinking { id, .. } => id,
+            Message::ThinkingDone { id, .. } => id,
+            Message::System { id, .. } => id,
+            Message::Error { id, .. } => id,
+        }
+    }
 }
 
 pub struct ToolCall {
@@ -140,11 +152,15 @@ where
     last_message: Instant,
     messages: Vec<Message>,
     embedder: Arc<T>,
+    connection: Connection,
 }
 
 impl<T: EmbeddingGenerator> Conversation<T> {
     pub fn builder() -> ConversationBuilder<T> {
-        ConversationBuilder { embedder: None }
+        ConversationBuilder {
+            embedder: None,
+            connection: None,
+        }
     }
 
     fn next_message_id(&self) -> Id {
@@ -158,67 +174,109 @@ impl<T: EmbeddingGenerator> Conversation<T> {
         Id::new(self.id, offset)
     }
 
-    pub async fn user(&mut self, content: impl Into<String>) {
+    async fn save_embedding(
+        &self,
+        id: &Id,
+        tool_index: Option<usize>,
+        embedding: &Embedding,
+    ) -> Result<(), Error> {
+        let id = serde_json::to_string(id).unwrap();
+        let tool_index: u64 = tool_index.unwrap_or(0).try_into().unwrap();
+
+        let embedding = unsafe {
+            let p = embedding.as_ptr() as *mut u8;
+            let len = embedding.len() * std::mem::size_of::<f32>();
+
+            std::slice::from_raw_parts(p, len)
+        };
+
+        self.connection
+            .execute(
+                "INSERT INTO messages(id, tool_index, embedding) VALUES(?, ?, ?)",
+                libsql::params![id, tool_index, embedding,],
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn user(&mut self, content: impl Into<String>) -> Result<(), Error> {
         let content = content.into();
-        let encoding = self.encode(&content).await.unwrap();
+        let encoding = self.encode(&content).await?;
         let id = self.next_message_id();
 
-        self.messages.push(Message::User {
-            id,
-            content,
-            encoding,
-        });
+        self.save_embedding(&id, None, &encoding).await?;
+
+        self.messages.push(Message::User { id, content });
+
+        Ok(())
     }
 
-    pub async fn assistant(&mut self, content: impl Into<String>) {
+    pub async fn assistant(&mut self, content: impl Into<String>) -> Result<(), Error> {
         let content = content.into();
-        let encoding = self.encode(&content).await.unwrap();
+        let encoding = self.encode(&content).await?;
+        let id = self.next_message_id();
 
-        self.messages.push(Message::Assistant {
-            id: self.next_message_id(),
-            content,
-            encoding,
-        });
+        self.save_embedding(&id, None, &encoding).await?;
+
+        self.messages.push(Message::Assistant { id, content });
+
+        Ok(())
     }
 
-    pub async fn system(&mut self, content: impl Into<String>) {
+    pub async fn system(&mut self, content: impl Into<String>) -> Result<(), Error> {
         self.messages.push(Message::System {
             id: self.next_message_id(),
             content: content.into(),
         });
+
+        Ok(())
     }
 
     pub async fn thinking(
         &mut self,
         content: impl Into<String>,
         tools: impl IntoIterator<Item = ToolCall>,
-    ) {
+    ) -> Result<(), Error> {
         self.messages.push(Message::Thinking {
             id: self.next_message_id(),
             content: content.into(),
             tools: tools.into_iter().collect(),
         });
+
+        Ok(())
     }
 
-    pub async fn thinking_done(&mut self, tools: impl IntoIterator<Item = ToolResult>) {
-        let mut encoded_results = Vec::new();
-        for tool in tools {
-            let encoding = self.encode(&tool.result).await.expect("encoding works");
+    pub async fn thinking_done(
+        &mut self,
+        tools: impl IntoIterator<Item = ToolResult>,
+    ) -> Result<(), Error> {
+        let id = self.next_message_id();
 
-            encoded_results.push((tool, encoding));
+        let mut encoded_results = Vec::new();
+        for (idx, tool) in tools.into_iter().enumerate() {
+            let encoding = self.encode(&tool.result).await?;
+
+            self.save_embedding(&id, Some(idx), &encoding).await?;
+
+            encoded_results.push(tool);
         }
 
         self.messages.push(Message::ThinkingDone {
-            id: self.next_message_id(),
+            id,
             tools: encoded_results,
         });
+
+        Ok(())
     }
 
-    pub async fn error(&mut self, content: impl Into<String>) {
+    pub async fn error(&mut self, content: impl Into<String>) -> Result<(), Error> {
         self.messages.push(Message::Error {
             id: self.next_message_id(),
             content: content.into(),
         });
+
+        Ok(())
     }
 
     async fn encode(&self, content: &str) -> Result<crate::embeddings::Embedding, Error> {
@@ -227,91 +285,71 @@ impl<T: EmbeddingGenerator> Conversation<T> {
 
     pub async fn related(&self, skip: usize, content: &str, max: usize) -> Vec<Message> {
         let target = self.encode(content).await.unwrap();
+        let to_fetch: u64 = (skip + max).try_into().expect("skip not too huge");
 
-        let mut heap = std::collections::BinaryHeap::new();
+        let mut rows = self
+            .connection
+            .query(
+                "SELECT id, tool_index FROM messages ORDER BY vector_distance_cos(embedding, ?) ASC LIMIT ?",
+                libsql::params![
+                    unsafe {
+                        let p = target.as_ptr() as *mut u8;
+                        let len = target.len() * std::mem::size_of::<f32>();
 
-        for message in self.into_iter().skip(skip) {
-            let distances = match message {
-                Message::User { encoding, .. } => vec![self.embedder.distance(&target, encoding)],
-                Message::Assistant { encoding, .. } => {
-                    vec![self.embedder.distance(&target, encoding)]
-                }
-                Message::Thinking { .. } => continue,
-                Message::ThinkingDone { tools, .. } => tools
-                    .iter()
-                    .map(|t| self.embedder.distance(&target, &t.1))
-                    .collect(),
-                Message::System { .. } => continue,
-                Message::Error { .. } => continue,
+                        std::slice::from_raw_parts(p, len)
+                    },
+                    to_fetch,
+                ],
+            )
+            .await
+            .unwrap();
+
+        let mut results = Vec::new();
+        let mut skipped = 0;
+        while let Some(row) = rows.next().await.unwrap() {
+            if skipped < skip {
+                skipped += 1;
+                continue;
+            }
+
+            let id: &str = row.get_str(0).unwrap();
+            let id: Id = serde_json::from_str(id).unwrap();
+
+            let tool_index: u64 = row.get(1).unwrap();
+            let tool_index: usize = tool_index.try_into().unwrap();
+
+            let Some(message) = self
+                .messages
+                .iter()
+                .find(|candidate| *candidate.get_id() == id)
+            else {
+                continue;
             };
 
-            for (i, distance) in distances.into_iter().enumerate() {
-                let message = match message {
-                    Message::User {
-                        id,
-                        content,
-                        encoding,
-                    } => Message::User {
-                        id: id.clone(),
-                        content: content.clone(),
-                        encoding: *encoding,
-                    },
-                    Message::Assistant {
-                        id,
-                        content,
-                        encoding,
-                    } => Message::Assistant {
-                        id: id.clone(),
-                        content: content.clone(),
-                        encoding: *encoding,
-                    },
-                    Message::Thinking { .. } => panic!("should not be ranked"),
-                    Message::ThinkingDone { id, tools } => Message::ThinkingDone {
-                        id: id.clone(),
-                        tools: vec![tools[i].clone()],
-                    },
-                    Message::System { .. } => panic!("should not be ranked"),
-                    Message::Error { .. } => panic!("should not be ranked"),
-                };
+            let message = match message {
+                Message::User { id, content } => Message::User {
+                    id: id.clone(),
+                    content: content.clone(),
+                },
+                Message::Assistant { id, content } => Message::Assistant {
+                    id: id.clone(),
+                    content: content.clone(),
+                },
+                Message::Thinking { .. } => panic!("Thinking messages shouldn't get indexed"),
+                Message::ThinkingDone { id, tools } => Message::ThinkingDone {
+                    id: id.clone(),
+                    tools: vec![tools[tool_index].clone()],
+                },
+                Message::System { .. } => panic!("System messages shouldn't get indexed"),
+                Message::Error { .. } => panic!("Error messages shouldn't get indexed"),
+            };
 
-                heap.push(RankedMessage { message, distance });
-            }
-
-            while heap.len() > max {
-                heap.pop();
-            }
+            results.push(message);
         }
 
-        heap.into_iter()
-            .map(|r| r.message)
-            .collect::<Vec<Message>>()
+        results
     }
 }
-
-struct RankedMessage {
-    message: Message,
-    distance: f32,
-}
-
-impl Ord for RankedMessage {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.distance.partial_cmp(&other.distance).unwrap()
-    }
-}
-
-impl PartialOrd for RankedMessage {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl PartialEq for RankedMessage {
-    fn eq(&self, other: &Self) -> bool {
-        self.distance == other.distance
-    }
-}
-
-impl Eq for RankedMessage {}
 
 impl<'a, T: EmbeddingGenerator> IntoIterator for &'a Conversation<T>
 where
@@ -331,6 +369,7 @@ where
     T: EmbeddingGenerator,
 {
     embedder: Option<Arc<T>>,
+    connection: Option<Connection>,
 }
 
 impl<T: EmbeddingGenerator> ConversationBuilder<T> {
@@ -356,21 +395,63 @@ impl<T: EmbeddingGenerator> ConversationBuilder<T> {
     pub fn with_embedder(self, embedder: Arc<T>) -> Self {
         Self {
             embedder: Some(embedder),
+            connection: self.connection,
         }
     }
 
-    pub fn build(self) -> Result<Conversation<T>, Error> {
+    /// Sets the database connection to use for the conversation
+    ///
+    /// # Arguments
+    ///
+    /// * `connection` - A Turso Connection instance for database operations
+    pub fn with_connection(self, connection: Connection) -> Self {
+        Self {
+            embedder: self.embedder,
+            connection: Some(connection),
+        }
+    }
+
+    pub async fn build(self) -> Result<Conversation<T>, Error> {
         let embedder = self.embedder.ok_or_else(|| {
             Error::Embedding(
                 "No embedding generator provided. Use with_embedder() to set one.".to_string(),
             )
         })?;
 
+        let connection = self.connection.ok_or_else(|| {
+            Error::Embedding(
+                "No connection provided. Use with_connection() to set one.".to_string(),
+            )
+        })?;
+
+        connection
+            .execute(
+                &format!(
+                    "CREATE TABLE IF NOT EXISTS messages (
+                       id TEXT NOT NULL,
+                       tool_index INTEGER NOT NULL,
+                       embedding F32_BLOB({EMBEDDING_DIMS}),
+                       PRIMARY KEY (id, tool_index)
+                     )"
+                ),
+                (),
+            )
+            .await
+            .expect("Messages table can be created");
+
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS messages_embedding_idx ON messages (libsql_vector_idx(embedding))",
+            (),
+        )
+        .await
+        .expect("Messages index can be created");
+
         Ok(Conversation {
             id: SystemTime::now(),
             last_message: Instant::now(),
             messages: Vec::new(),
             embedder,
+            connection,
         })
     }
 }
@@ -382,11 +463,15 @@ mod tests {
     use std::sync::Arc;
 
     /// Helper method to create a new conversation for testing
-    fn create_test_conversation() -> Conversation<crate::embeddings::TestEmbedder> {
+    async fn create_test_conversation() -> Conversation<crate::embeddings::TestEmbedder> {
         let embedder = Arc::new(TestEmbedder {});
+        let db = crate::database::Database::new().await;
+        let conn = db.connect().unwrap();
         ConversationBuilder::default()
             .with_embedder(embedder)
+            .with_connection(conn)
             .build()
+            .await
             .unwrap()
     }
 
@@ -401,7 +486,7 @@ mod tests {
                     // For testing purposes, return a summary of tool outputs
                     tools
                         .iter()
-                        .map(|(tool_result, _)| tool_result.result.as_str())
+                        .map(|tool_result| tool_result.result.as_str())
                         .collect::<Vec<_>>()
                         .join("; ")
                 }
@@ -412,10 +497,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_into_iterator_implementation() {
-        let mut conversation = create_test_conversation();
-        conversation.user("Hello").await;
-        conversation.assistant("Hi there!").await;
-        conversation.system("Connection established").await;
+        let mut conversation = create_test_conversation().await;
+        conversation.user("Hello").await.unwrap();
+        conversation.assistant("Hi there!").await.unwrap();
+        conversation.system("Connection established").await.unwrap();
 
         let messages: Vec<&Message> = (&conversation).into_iter().collect();
 
@@ -431,16 +516,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_related_empty_conversation() {
-        let conversation = create_test_conversation();
+        let conversation = create_test_conversation().await;
         let related = conversation.related(0, "test query", 5).await;
         assert_eq!(related.len(), 0);
     }
 
     #[tokio::test]
     async fn test_related_max_zero() {
-        let mut conversation = create_test_conversation();
-        conversation.user("Hello world").await;
-        conversation.assistant("Hi there").await;
+        let mut conversation = create_test_conversation().await;
+        conversation.user("Hello world").await.unwrap();
+        conversation.assistant("Hi there").await.unwrap();
 
         let related = conversation.related(0, "greeting", 0).await;
         assert_eq!(related.len(), 0);
@@ -448,12 +533,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_related_respects_max_limit() {
-        let mut conversation = create_test_conversation();
-        conversation.user("First message").await;
-        conversation.assistant("First response").await;
-        conversation.user("Second message").await;
-        conversation.assistant("Second response").await;
-        conversation.user("Third message").await;
+        let mut conversation = create_test_conversation().await;
+        conversation.user("First message").await.unwrap();
+        conversation.assistant("First response").await.unwrap();
+        conversation.user("Second message").await.unwrap();
+        conversation.assistant("Second response").await.unwrap();
+        conversation.user("Third message").await.unwrap();
 
         let related = conversation.related(0, "message", 3).await;
         assert!(related.len() <= 3);
@@ -464,12 +549,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_related_only_includes_rankable_messages() {
-        let mut conversation = create_test_conversation();
-        conversation.user("User message").await;
-        conversation.assistant("Assistant message").await;
-        conversation.system("System message").await;
-        conversation.error("Error message").await;
-        conversation.thinking("Thinking content", vec![]).await;
+        let mut conversation = create_test_conversation().await;
+        conversation.user("User message").await.unwrap();
+        conversation.assistant("Assistant message").await.unwrap();
+        conversation.system("System message").await.unwrap();
+        conversation.error("Error message").await.unwrap();
+        conversation
+            .thinking("Thinking content", vec![])
+            .await
+            .unwrap();
 
         let related = conversation.related(0, "message", 10).await;
 
@@ -487,8 +575,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_related_includes_thinking_done_tools() {
-        let mut conversation = create_test_conversation();
-        conversation.user("User message").await;
+        let mut conversation = create_test_conversation().await;
+        conversation.user("User message").await.unwrap();
         conversation
             .thinking_done(vec![
                 ToolResult {
@@ -502,7 +590,8 @@ mod tests {
                     result: "Tool output 2".to_string(),
                 },
             ])
-            .await;
+            .await
+            .unwrap();
 
         let related = conversation.related(0, "tool output", 10).await;
 
@@ -519,12 +608,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_related_message_content_preserved() {
-        let mut conversation = create_test_conversation();
+        let mut conversation = create_test_conversation().await;
         let user_content = "Hello world";
         let assistant_content = "Hi there friend";
 
-        conversation.user(user_content).await;
-        conversation.assistant(assistant_content).await;
+        conversation.user(user_content).await.unwrap();
+        conversation.assistant(assistant_content).await.unwrap();
 
         let related = conversation.related(0, "hello", 10).await;
 
@@ -538,9 +627,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_related_preserves_message_ids() {
-        let mut conversation = create_test_conversation();
-        conversation.user("First message").await;
-        conversation.assistant("Response").await;
+        let mut conversation = create_test_conversation().await;
+        conversation.user("First message").await.unwrap();
+        conversation.assistant("Response").await.unwrap();
 
         let related = conversation.related(0, "message", 10).await;
 
@@ -559,21 +648,33 @@ mod tests {
     #[tokio::test]
     async fn test_shared_embedder() {
         let embedder = Arc::new(TestEmbedder {});
+        let db = crate::database::Database::new().await;
 
-        // Create multiple conversations sharing the same embedder
-        let mut conversation1 = ConversationBuilder::default()
+        let conn1 = db.connect().unwrap();
+        let mut conversation1 = Conversation::builder()
             .with_embedder(Arc::clone(&embedder))
+            .with_connection(conn1)
             .build()
+            .await
             .unwrap();
 
-        let mut conversation2 = ConversationBuilder::default()
+        let conn2 = db.connect().unwrap();
+        let mut conversation2 = Conversation::builder()
             .with_embedder(Arc::clone(&embedder))
+            .with_connection(conn2)
             .build()
+            .await
             .unwrap();
 
         // Add messages to both conversations
-        conversation1.user("Hello from conversation 1").await;
-        conversation2.user("Hello from conversation 2").await;
+        conversation1
+            .user("Hello from conversation 1")
+            .await
+            .unwrap();
+        conversation2
+            .user("Hello from conversation 2")
+            .await
+            .unwrap();
 
         // Verify both conversations work independently
         assert_eq!(conversation1.messages.len(), 1);
@@ -585,5 +686,32 @@ mod tests {
 
         assert_eq!(related1.len(), 1);
         assert_eq!(related2.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_messages_table_exists() {
+        let conversation = create_test_conversation().await;
+        let conn = conversation.connection;
+
+        // Query the sqlite_master table to check if messages table exists
+        // This uses a raw Turso query since we don't have a query wrapper yet
+        let mut rows = conn
+            .query(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'",
+                (),
+            )
+            .await
+            .unwrap();
+
+        // Should find exactly one row with the messages table
+        let row = rows.next().await.unwrap().unwrap();
+        let table_name = match row.get_value(0).unwrap() {
+            libsql::Value::Text(s) => s,
+            _ => panic!("Expected text value for table name"),
+        };
+        assert_eq!(table_name, "messages");
+
+        // Verify no more rows
+        assert!(rows.next().await.unwrap().is_none());
     }
 }

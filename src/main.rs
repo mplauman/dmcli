@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::anthropic::Client;
 use crate::commands::DmCommand;
 use crate::conversation::Conversation;
+use crate::database::Database;
 use crate::embeddings::{EmbeddingGenerator, Model2VecEmbeddingGeneratorBuilder};
 use crate::errors::Error;
 use crate::events::AppEvent;
@@ -13,6 +14,7 @@ use crate::input::InputHandler;
 mod anthropic;
 mod commands;
 mod conversation;
+mod database;
 mod embeddings;
 mod errors;
 mod events;
@@ -145,11 +147,23 @@ fn create_embedder(config: &Config) -> Result<Arc<impl EmbeddingGenerator>, Erro
     Ok(result)
 }
 
-fn create_conversation(
+async fn create_database(_config: &Config) -> Result<Database, Error> {
+    // Create temporary file database (schema is initialized automatically)
+    Database::builder().build().await
+}
+
+async fn create_conversation(
     _config: &Config,
     embedder: Arc<impl EmbeddingGenerator>,
+    db: &Database,
 ) -> Result<Conversation<impl EmbeddingGenerator>, Error> {
-    Conversation::builder().with_embedder(embedder).build()
+    let conn = db.connect()?;
+
+    Conversation::builder()
+        .with_embedder(embedder)
+        .with_connection(conn)
+        .build()
+        .await
 }
 
 #[tokio::main]
@@ -158,7 +172,8 @@ async fn main() -> Result<(), Error> {
     init_logging(&settings)?;
 
     let embedder = create_embedder(&settings)?;
-    let mut conversation = create_conversation(&settings, embedder)?;
+    let db = create_database(&settings).await?;
+    let mut conversation = create_conversation(&settings, embedder, &db).await?;
     let mut input_text = String::new();
     let mut input_cursor = usize::default();
 
@@ -176,7 +191,7 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    conversation.system("Welcome to dmcli! Type your message and press Enter to send. Send 'roll 2d6' to roll a dice or 'exit' to quit.").await;
+    conversation.system("Welcome to dmcli! Type your message and press Enter to send. Send 'roll 2d6' to roll a dice or 'exit' to quit.").await?;
 
     tui.render(&conversation, &input_text, input_cursor)?;
     while let Ok(event) = event_receiver.recv().await {
@@ -184,23 +199,25 @@ async fn main() -> Result<(), Error> {
 
         match event {
             AppEvent::UserCommand(DmCommand::Exit {}) => {
-                conversation.system("Good bye!").await;
+                conversation.system("Good bye!").await?;
                 break;
             }
             AppEvent::UserCommand(DmCommand::Reset {}) => {
-                conversation.system("Conversation reset (not really)").await;
+                conversation
+                    .system("Conversation reset (not really)")
+                    .await?;
             }
             AppEvent::UserCommand(DmCommand::Roll { expressions }) => {
                 let result = caith::Roller::new(&expressions.join(" "))
                     .unwrap()
                     .roll()
                     .unwrap();
-                conversation.system(format!("🎲 {result}")).await;
+                conversation.system(format!("🎲 {result}")).await?;
                 tui.reset_scroll();
             }
             AppEvent::UserAgent(line) => {
                 if !line.is_empty() {
-                    conversation.user(&line).await;
+                    conversation.user(&line).await?;
                     tui.reset_scroll();
                     client.push(&conversation).await?;
                 }
@@ -210,7 +227,7 @@ async fn main() -> Result<(), Error> {
                 break;
             }
             AppEvent::AiResponse(msg) => {
-                conversation.assistant(&msg).await;
+                conversation.assistant(&msg).await?;
                 tui.reset_scroll();
             }
             AppEvent::AiThinking(msg, tools) => {
@@ -225,7 +242,7 @@ async fn main() -> Result<(), Error> {
                     }
                 });
 
-                conversation.thinking(format!("🤔 {msg}"), tools).await;
+                conversation.thinking(format!("🤔 {msg}"), tools).await?;
             }
             AppEvent::AiThinkingDone(tools) => {
                 let tools = tools.into_iter().map(|tr| crate::conversation::ToolResult {
@@ -234,10 +251,10 @@ async fn main() -> Result<(), Error> {
                     result: tr.function.arguments,
                 });
 
-                conversation.thinking_done(tools).await;
+                conversation.thinking_done(tools).await?;
             }
             AppEvent::AiError(msg) => {
-                conversation.error(format!("❌ {msg}")).await;
+                conversation.error(format!("❌ {msg}")).await?;
                 tui.reset_scroll();
             }
             AppEvent::InputUpdated { line, cursor } => {

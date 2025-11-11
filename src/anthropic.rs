@@ -101,9 +101,7 @@ impl Client {
                 },
                 Message::ThinkingDone { tools, .. } => ChatMessage {
                     role: ChatRole::User,
-                    message_type: LlmMessageType::ToolResult(to_tool_result(
-                        tools.iter().map(|t| &t.0),
-                    )),
+                    message_type: LlmMessageType::ToolResult(to_tool_result(tools.iter())),
                     content: String::new(),
                 },
                 Message::System { .. } => continue,
@@ -131,7 +129,7 @@ impl Client {
                     Message::User { content, .. } => format!("- user: {content}"),
                     Message::Assistant { content, .. } => format!(" - assistant: {content}"),
                     Message::ThinkingDone { tools, .. } => {
-                        format!(" - tool: {}", tools[0].0.result)
+                        format!(" - tool: {}", tools[0].result)
                     }
                     _ => panic!("Unexpected message type included in 'related' messages"),
                 })
