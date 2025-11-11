@@ -61,12 +61,10 @@ pub enum Message {
     User {
         id: Id,
         content: String,
-        encoding: crate::embeddings::Embedding,
     },
     Assistant {
         id: Id,
         content: String,
-        encoding: crate::embeddings::Embedding,
     },
     Thinking {
         id: Id,
@@ -75,7 +73,7 @@ pub enum Message {
     },
     ThinkingDone {
         id: Id,
-        tools: Vec<(ToolResult, crate::embeddings::Embedding)>,
+        tools: Vec<ToolResult>,
     },
     System {
         id: Id,
@@ -209,11 +207,7 @@ impl<T: EmbeddingGenerator> Conversation<T> {
 
         self.save_embedding(&id, None, &encoding).await?;
 
-        self.messages.push(Message::User {
-            id,
-            content,
-            encoding,
-        });
+        self.messages.push(Message::User { id, content });
 
         Ok(())
     }
@@ -225,11 +219,7 @@ impl<T: EmbeddingGenerator> Conversation<T> {
 
         self.save_embedding(&id, None, &encoding).await?;
 
-        self.messages.push(Message::Assistant {
-            id,
-            content,
-            encoding,
-        });
+        self.messages.push(Message::Assistant { id, content });
 
         Ok(())
     }
@@ -269,7 +259,7 @@ impl<T: EmbeddingGenerator> Conversation<T> {
 
             self.save_embedding(&id, Some(idx), &encoding).await?;
 
-            encoded_results.push((tool, encoding));
+            encoded_results.push(tool);
         }
 
         self.messages.push(Message::ThinkingDone {
@@ -337,28 +327,18 @@ impl<T: EmbeddingGenerator> Conversation<T> {
             };
 
             let message = match message {
-                Message::User {
-                    id,
-                    content,
-                    encoding,
-                } => Message::User {
+                Message::User { id, content } => Message::User {
                     id: id.clone(),
                     content: content.clone(),
-                    encoding: *encoding,
                 },
-                Message::Assistant {
-                    id,
-                    content,
-                    encoding,
-                } => Message::Assistant {
+                Message::Assistant { id, content } => Message::Assistant {
                     id: id.clone(),
                     content: content.clone(),
-                    encoding: *encoding,
                 },
                 Message::Thinking { .. } => panic!("Thinking messages shouldn't get indexed"),
                 Message::ThinkingDone { id, tools } => Message::ThinkingDone {
                     id: id.clone(),
-                    tools: vec![(tools[tool_index].0.clone(), tools[tool_index].1)],
+                    tools: vec![tools[tool_index].clone()],
                 },
                 Message::System { .. } => panic!("System messages shouldn't get indexed"),
                 Message::Error { .. } => panic!("Error messages shouldn't get indexed"),
@@ -506,7 +486,7 @@ mod tests {
                     // For testing purposes, return a summary of tool outputs
                     tools
                         .iter()
-                        .map(|(tool_result, _)| tool_result.result.as_str())
+                        .map(|tool_result| tool_result.result.as_str())
                         .collect::<Vec<_>>()
                         .join("; ")
                 }
