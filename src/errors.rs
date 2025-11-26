@@ -1,3 +1,5 @@
+use rmcp::service::ClientInitializeError;
+
 #[derive(Debug)]
 pub enum Error {
     NoToolUses,
@@ -92,6 +94,12 @@ impl From<serde_json::Error> for Error {
     }
 }
 
+impl From<ClientInitializeError> for Error {
+    fn from(error: ClientInitializeError) -> Self {
+        panic!("Don't know how to handle {error:?}");
+    }
+}
+
 impl From<rmcp::ServiceError> for Error {
     fn from(error: rmcp::ServiceError) -> Self {
         panic!("Don't know how to handle {error:?}");
@@ -104,45 +112,49 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<Error> for rmcp::Error {
+impl From<Error> for rmcp::ErrorData {
     fn from(val: Error) -> Self {
         use serde_json::error::Category;
 
         match val {
-            Error::NoToolUses => rmcp::Error::invalid_request("No tool uses found", None),
-            Error::Io(e) => rmcp::Error::internal_error(format!("IO error: {e}"), None),
-            Error::Eof => rmcp::Error::internal_error("Unhandled EOF during tool usage", None),
+            Error::NoToolUses => rmcp::ErrorData::invalid_request("No tool uses found", None),
+            Error::Io(e) => rmcp::ErrorData::internal_error(format!("IO error: {e}"), None),
+            Error::Eof => rmcp::ErrorData::internal_error("Unhandled EOF during tool usage", None),
             Error::Interrupted => {
-                rmcp::Error::internal_error("Interrupted during tool usage", None)
+                rmcp::ErrorData::internal_error("Interrupted during tool usage", None)
             }
             Error::WindowResized => {
                 panic!("Window resize events should not happen during tool use")
             }
-            Error::JsonDeserialization(line, column, Category::Io) => rmcp::Error::internal_error(
-                format!(
-                    "IO failure during tool processing, decoding intermediate JSON. Line {line}, col {column}."
-                ),
-                None,
-            ),
-            Error::JsonDeserialization(line, column, Category::Eof) => rmcp::Error::internal_error(
-                format!(
-                    "Unexpected EOF during tool processing, decoding intermediate JSON. Line {line}, col {column}."
-                ),
-                None,
-            ),
+            Error::JsonDeserialization(line, column, Category::Io) => {
+                rmcp::ErrorData::internal_error(
+                    format!(
+                        "IO failure during tool processing, decoding intermediate JSON. Line {line}, col {column}."
+                    ),
+                    None,
+                )
+            }
+            Error::JsonDeserialization(line, column, Category::Eof) => {
+                rmcp::ErrorData::internal_error(
+                    format!(
+                        "Unexpected EOF during tool processing, decoding intermediate JSON. Line {line}, col {column}."
+                    ),
+                    None,
+                )
+            }
             Error::JsonDeserialization(line, column, Category::Data) => panic!(
                 "Bad data conversion during tool use while decoding JSON. Incompatible data on line {line}, col {column}"
             ),
             Error::JsonDeserialization(line, column, Category::Syntax) => panic!(
                 "Invalid JSON syntax during tool use while decoding JSON on line {line}, column {column}"
             ),
-            Error::InvalidVaultPath(path) => rmcp::Error::invalid_request(
+            Error::InvalidVaultPath(path) => rmcp::ErrorData::invalid_request(
                 format!(
                     "Invalid vault path '{path}': paths must be relative to the vault root, not absolute"
                 ),
                 None,
             ),
-            Error::Http(e) => rmcp::Error::internal_error(format!("HTTP error: {e}"), None),
+            Error::Http(e) => rmcp::ErrorData::internal_error(format!("HTTP error: {e}"), None),
             Error::McpServer(e) => panic!("{e}"),
             Error::Embedding(e) => panic!("{e}"),
         }
@@ -235,7 +247,7 @@ mod tests {
                     assert!(display_str.contains("HTTP error:"));
 
                     // Test conversion to rmcp::Error
-                    let rmcp_error: rmcp::Error = our_error.into();
+                    let rmcp_error: rmcp::ErrorData = our_error.into();
                     let rmcp_str = rmcp_error.to_string();
                     assert!(rmcp_str.contains("HTTP error:"));
                 }

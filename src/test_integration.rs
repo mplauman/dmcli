@@ -1,4 +1,5 @@
 use crate::obsidian::{GetLinkedNotesRequest, Obsidian, SearchWithContextRequest};
+use rmcp::handler::server::wrapper::Parameters;
 
 #[cfg(test)]
 mod integration_tests {
@@ -76,7 +77,7 @@ mod integration_tests {
             case_sensitive: Some(false),
         };
 
-        let result = obsidian.search_with_context(request).unwrap();
+        let result = obsidian.search_with_context(Parameters(request)).unwrap();
 
         // Should find matches in both files
         let content_str = format!("{:?}", result.content[0]);
@@ -102,7 +103,7 @@ mod integration_tests {
             case_sensitive: Some(false),
         };
 
-        let result = obsidian.search_with_context(request).unwrap();
+        let result = obsidian.search_with_context(Parameters(request)).unwrap();
 
         let content_str = format!("{:?}", result.content[0]);
         assert!(content_str.contains("1d20"));
@@ -121,7 +122,7 @@ mod integration_tests {
             filename: "campaign_overview.md".to_string(),
         };
 
-        let result = obsidian.get_linked_notes(request).unwrap();
+        let result = obsidian.get_linked_notes(Parameters(request)).unwrap();
 
         let content_str = format!("{:?}", result.content[0]);
 
@@ -151,7 +152,7 @@ mod integration_tests {
             filename: "Combat Rules.md".to_string(),
         };
 
-        let result = obsidian.get_linked_notes(request).unwrap();
+        let result = obsidian.get_linked_notes(Parameters(request)).unwrap();
 
         let content_str = format!("{:?}", result.content[0]);
         assert!(content_str.contains("Combat Rules.md"));
@@ -174,7 +175,7 @@ mod integration_tests {
             case_sensitive: Some(true),
         };
 
-        let result = obsidian.search_with_context(request).unwrap();
+        let result = obsidian.search_with_context(Parameters(request)).unwrap();
 
         let content_str = format!("{:?}", result.content[0]);
         // Should find "Crown" with capital C
@@ -197,8 +198,8 @@ mod integration_tests {
             filename: "Lord Commander Marcus.md".to_string(),
         };
 
-        let result1 = obsidian.get_linked_notes(request1).unwrap();
-        let result2 = obsidian.get_linked_notes(request2).unwrap();
+        let result1 = obsidian.get_linked_notes(Parameters(request1)).unwrap();
+        let result2 = obsidian.get_linked_notes(Parameters(request2)).unwrap();
 
         let content1_str = format!("{:?}", result1.content[0]);
         let content2_str = format!("{:?}", result2.content[0]);

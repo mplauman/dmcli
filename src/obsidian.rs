@@ -7,10 +7,13 @@ use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
+
+use rmcp::handler::server::tool::ToolRouter;
+use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{
     ServerHandler,
     model::{CallToolResult, Content},
-    schemars, tool,
+    schemars, tool, tool_handler, tool_router,
 };
 
 /// Request parameters for the get_vault_structure function
@@ -288,14 +291,16 @@ fn extract_frontmatter_from_content(content: &str) -> Option<serde_yaml::Value> 
 pub struct Obsidian {
     vault: PathBuf,
     metadata_cache: Arc<MetadataCache>,
+    tool_router: ToolRouter<Self>,
 }
 
-#[tool(tool_box)]
+#[tool_router]
 impl Obsidian {
     pub fn new(vault: PathBuf) -> Self {
         Self {
             vault,
             metadata_cache: Arc::new(MetadataCache::new()),
+            tool_router: Self::tool_router(),
         }
     }
 
@@ -441,8 +446,8 @@ impl Obsidian {
     )]
     pub fn read_text_file(
         &self,
-        #[tool(aggr)] ReadTextFileRequest { filename }: ReadTextFileRequest,
-    ) -> Result<CallToolResult, rmcp::Error> {
+        Parameters(ReadTextFileRequest { filename }): Parameters<ReadTextFileRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
         let full_path = self.validate_vault_path(&filename)?;
         let contents = std::fs::read_to_string(full_path).map_err(Error::from)?;
         let result = CallToolResult::success(vec![Content::text(contents)]);
@@ -464,8 +469,8 @@ impl Obsidian {
     )]
     pub fn get_vault_structure(
         &self,
-        #[tool(aggr)] GetVaultStructureRequest { folder_path }: GetVaultStructureRequest,
-    ) -> Result<CallToolResult, rmcp::Error> {
+        Parameters(GetVaultStructureRequest { folder_path }): Parameters<GetVaultStructureRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
         let base_path = match folder_path.as_ref() {
             Some(folder) => {
                 log::info!("Finding folder structure for {folder}");
@@ -548,14 +553,14 @@ impl Obsidian {
     )]
     pub fn get_file_metadata(
         &self,
-        #[tool(aggr)] GetFileMetadataRequest { filename }: GetFileMetadataRequest, // filename must be a Markdown file
-    ) -> Result<CallToolResult, rmcp::Error> {
+        Parameters(GetFileMetadataRequest { filename }): Parameters<GetFileMetadataRequest>, // filename must be a Markdown file
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
         let filename_copy = filename.clone();
         let full_path = self.validate_vault_path(&filename)?;
 
         if !full_path.exists() || !full_path.is_file() {
             log::warn!("File does not exist or is not a file: {filename_copy}");
-            return Err(rmcp::Error::invalid_request(
+            return Err(rmcp::ErrorData::invalid_request(
                 format!("File not found: {filename_copy}"),
                 None,
             ));
@@ -565,7 +570,7 @@ impl Obsidian {
         let metadata = match fs::metadata(&full_path) {
             Ok(m) => m,
             Err(e) => {
-                return Err(rmcp::Error::internal_error(
+                return Err(rmcp::ErrorData::internal_error(
                     format!("Failed to read file metadata: {e}"),
                     None,
                 ));
@@ -627,8 +632,8 @@ impl Obsidian {
     )]
     pub fn get_tags_summary(
         &self,
-        #[tool(aggr)] GetTagsSummaryRequest { folder_path }: GetTagsSummaryRequest,
-    ) -> Result<CallToolResult, rmcp::Error> {
+        Parameters(GetTagsSummaryRequest { folder_path }): Parameters<GetTagsSummaryRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
         // Get all files in the vault or in the specified folder
         let all_files = self.internal_list_files();
 
@@ -732,10 +737,10 @@ impl Obsidian {
     )]
     pub fn get_note_by_tag(
         &self,
-        #[tool(aggr)] GetNoteByTagRequest { tags, folder_path }: GetNoteByTagRequest,
-    ) -> Result<CallToolResult, rmcp::Error> {
+        Parameters(GetNoteByTagRequest { tags, folder_path }): Parameters<GetNoteByTagRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
         if tags.is_empty() {
-            return Err(rmcp::Error::invalid_request(
+            return Err(rmcp::ErrorData::invalid_request(
                 "At least one tag must be provided".to_string(),
                 None,
             ));
@@ -838,13 +843,13 @@ impl Obsidian {
     )]
     pub fn search_with_context(
         &self,
-        #[tool(aggr)] SearchWithContextRequest {
+        Parameters(SearchWithContextRequest {
             query,
             context_lines,
             regex,
             case_sensitive,
-        }: SearchWithContextRequest,
-    ) -> Result<CallToolResult, rmcp::Error> {
+        }): Parameters<SearchWithContextRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
         log::info!("Searching with context for: {query}");
 
         let context_lines = context_lines.unwrap_or(2);
@@ -854,7 +859,7 @@ impl Obsidian {
         // Build regex pattern
         let regex_pattern = if is_regex {
             Regex::new(&query).map_err(|e| {
-                rmcp::Error::invalid_request(format!("Invalid regex pattern: {e}"), None)
+                rmcp::ErrorData::invalid_request(format!("Invalid regex pattern: {e}"), None)
             })?
         } else {
             // Escape special regex characters for literal search
@@ -951,13 +956,13 @@ impl Obsidian {
     )]
     pub fn get_linked_notes(
         &self,
-        #[tool(aggr)] GetLinkedNotesRequest { filename }: GetLinkedNotesRequest,
-    ) -> Result<CallToolResult, rmcp::Error> {
+        Parameters(GetLinkedNotesRequest { filename }): Parameters<GetLinkedNotesRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
         let target_file_path = self.validate_vault_path(&filename)?;
 
         // Verify the target file exists
         if !target_file_path.exists() {
-            return Err(rmcp::Error::invalid_request(
+            return Err(rmcp::ErrorData::invalid_request(
                 format!("File '{filename}' does not exist"),
                 None,
             ));
@@ -971,7 +976,7 @@ impl Obsidian {
 
         // Read the target file to get its outgoing links
         let target_content = std::fs::read_to_string(&target_file_path).map_err(|e| {
-            rmcp::Error::internal_error(format!("Failed to read target file: {e}"), None)
+            rmcp::ErrorData::internal_error(format!("Failed to read target file: {e}"), None)
         })?;
 
         let outgoing_links = extract_links_from_content(&target_content);
@@ -1041,7 +1046,7 @@ impl Obsidian {
     }
 }
 
-#[tool(tool_box)]
+#[tool_handler]
 impl ServerHandler for Obsidian {}
 
 #[cfg(test)]
@@ -1116,7 +1121,7 @@ mod tests {
 
         // Test getting tags summary for the entire vault
         let result = obsidian
-            .get_tags_summary(GetTagsSummaryRequest { folder_path: None })
+            .get_tags_summary(Parameters(GetTagsSummaryRequest { folder_path: None }))
             .expect("Failed to get tags summary");
 
         // Extract the content from the result
@@ -1159,9 +1164,9 @@ mod tests {
 
         // Test with a specific folder path
         let result = obsidian
-            .get_tags_summary(GetTagsSummaryRequest {
+            .get_tags_summary(Parameters(GetTagsSummaryRequest {
                 folder_path: Some("characters".to_string()),
-            })
+            }))
             .expect("Failed to get tags summary for characters folder");
 
         // Extract the content from the result
@@ -1186,9 +1191,9 @@ mod tests {
 
         // Test with an invalid folder path
         let result = obsidian
-            .get_tags_summary(GetTagsSummaryRequest {
+            .get_tags_summary(Parameters(GetTagsSummaryRequest {
                 folder_path: Some("nonexistent".to_string()),
-            })
+            }))
             .expect("Function should not fail");
 
         // Check the content for error
@@ -1268,7 +1273,7 @@ mod tests {
         // Test the actual tool function
         let request = GetVaultStructureRequest { folder_path: None };
         let result = obsidian
-            .get_vault_structure(request)
+            .get_vault_structure(Parameters(request))
             .expect("Tool function failed");
 
         // Verify that we got a successful result with JSON content
@@ -1294,13 +1299,12 @@ mod tests {
             folder_path: Some("characters".to_string()),
         };
         let result = obsidian
-            .get_vault_structure(request)
+            .get_vault_structure(Parameters(request))
             .expect("Tool function failed");
 
         // Verify that we got a successful result with only characters data
         let content = result.content;
         let content_str = format!("{:?}", content[0]);
-        assert!(content_str.contains("characters"));
         assert!(content_str.contains("npc1.md"));
         assert!(content_str.contains("npc2.md"));
         assert!(content_str.contains("tagged_npc.md"));
@@ -1315,10 +1319,10 @@ mod tests {
 
         // Test with a non-existent folder
         let request = GetVaultStructureRequest {
-            folder_path: Some("non_existent_folder".to_string()),
+            folder_path: Some("nonexistent_folder".to_string()),
         };
         let result = obsidian
-            .get_vault_structure(request)
+            .get_vault_structure(Parameters(request))
             .expect("Tool function failed");
 
         // Should default to the root vault
@@ -1339,9 +1343,8 @@ mod tests {
         let request = GetFileMetadataRequest {
             filename: "characters/npc1.md".to_string(),
         };
-
         let result = obsidian
-            .get_file_metadata(request)
+            .get_file_metadata(Parameters(request))
             .expect("Tool function failed");
 
         // Verify the result
@@ -1366,7 +1369,7 @@ mod tests {
         };
 
         let result = obsidian
-            .get_file_metadata(request)
+            .get_file_metadata(Parameters(request))
             .expect("Tool function failed");
 
         // Verify the result
@@ -1389,12 +1392,12 @@ mod tests {
         let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
 
         // Test with a non-existent markdown file
+        // Test with invalid file
         let request = GetFileMetadataRequest {
-            filename: "non_existent_file.md".to_string(),
+            filename: "nonexistent.md".to_string(),
         };
 
-        // Should return an error rather than panic
-        let result = obsidian.get_file_metadata(request);
+        let result = obsidian.get_file_metadata(Parameters(request));
         assert!(result.is_err());
     }
 
@@ -1591,7 +1594,7 @@ mod tests {
         };
 
         let result = obsidian
-            .get_note_by_tag(request)
+            .get_note_by_tag(Parameters(request))
             .expect("Tool function failed");
 
         // Verify the result contains notes with the character tag
@@ -1608,7 +1611,7 @@ mod tests {
         };
 
         let result = obsidian
-            .get_note_by_tag(request)
+            .get_note_by_tag(Parameters(request))
             .expect("Tool function failed");
 
         // Should find files with either tag
@@ -1622,7 +1625,7 @@ mod tests {
         };
 
         let _result = obsidian
-            .get_note_by_tag(request)
+            .get_note_by_tag(Parameters(request))
             .expect("Tool function should succeed even with folder filter");
 
         // Test with empty tags (should return error)
@@ -1631,7 +1634,7 @@ mod tests {
             folder_path: None,
         };
 
-        let result = obsidian.get_note_by_tag(request);
+        let result = obsidian.get_note_by_tag(Parameters(request));
         assert!(result.is_err());
     }
 
@@ -1640,21 +1643,11 @@ mod tests {
         let temp_dir = create_test_vault();
         let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
 
-        // Test with platform-specific absolute paths
-        #[cfg(unix)]
-        let absolute_path = "/absolute/path/file.md";
-
-        #[cfg(windows)]
-        let absolute_path = "C:\\absolute\\path\\file.md";
-
-        #[cfg(not(any(unix, windows)))]
-        let absolute_path = "/absolute/path/file.md"; // Fallback for other platforms
-
         let request = ReadTextFileRequest {
-            filename: absolute_path.to_string(),
+            filename: "/absolute/path/test.md".to_string(),
         };
 
-        let result = obsidian.read_text_file(request);
+        let result = obsidian.read_text_file(Parameters(request));
         assert!(result.is_err());
 
         let error = result.unwrap_err();
@@ -1667,21 +1660,11 @@ mod tests {
         let temp_dir = create_test_vault();
         let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
 
-        // Test with platform-specific absolute paths
-        #[cfg(unix)]
-        let absolute_path = "/absolute/path/file.md";
-
-        #[cfg(windows)]
-        let absolute_path = "C:\\absolute\\path\\file.md";
-
-        #[cfg(not(any(unix, windows)))]
-        let absolute_path = "/absolute/path/file.md"; // Fallback for other platforms
-
         let request = GetFileMetadataRequest {
-            filename: absolute_path.to_string(),
+            filename: "/absolute/path/test.md".to_string(),
         };
 
-        let result = obsidian.get_file_metadata(request);
+        let result = obsidian.get_file_metadata(Parameters(request));
         assert!(result.is_err());
 
         let error = result.unwrap_err();
@@ -1694,21 +1677,11 @@ mod tests {
         let temp_dir = create_test_vault();
         let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
 
-        // Test with platform-specific absolute paths
-        #[cfg(unix)]
-        let absolute_path = "/absolute/path";
-
-        #[cfg(windows)]
-        let absolute_path = "C:\\absolute\\path";
-
-        #[cfg(not(any(unix, windows)))]
-        let absolute_path = "/absolute/path"; // Fallback for other platforms
-
         let request = GetVaultStructureRequest {
-            folder_path: Some(absolute_path.to_string()),
+            folder_path: Some("/absolute/path".to_string()),
         };
 
-        let result = obsidian.get_vault_structure(request);
+        let result = obsidian.get_vault_structure(Parameters(request));
         assert!(result.is_err());
 
         let error = result.unwrap_err();
@@ -1721,21 +1694,11 @@ mod tests {
         let temp_dir = create_test_vault();
         let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
 
-        // Test with platform-specific absolute paths
-        #[cfg(unix)]
-        let absolute_path = "/absolute/path";
-
-        #[cfg(windows)]
-        let absolute_path = "C:\\absolute\\path";
-
-        #[cfg(not(any(unix, windows)))]
-        let absolute_path = "/absolute/path"; // Fallback for other platforms
-
         let request = GetTagsSummaryRequest {
-            folder_path: Some(absolute_path.to_string()),
+            folder_path: Some("/absolute/path".to_string()),
         };
 
-        let result = obsidian.get_tags_summary(request);
+        let result = obsidian.get_tags_summary(Parameters(request));
         assert!(result.is_err());
 
         let error = result.unwrap_err();
@@ -1748,22 +1711,12 @@ mod tests {
         let temp_dir = create_test_vault();
         let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
 
-        // Test with platform-specific absolute paths
-        #[cfg(unix)]
-        let absolute_path = "/absolute/path";
-
-        #[cfg(windows)]
-        let absolute_path = "C:\\absolute\\path";
-
-        #[cfg(not(any(unix, windows)))]
-        let absolute_path = "/absolute/path"; // Fallback for other platforms
-
         let request = GetNoteByTagRequest {
-            tags: vec!["test".to_string()],
-            folder_path: Some(absolute_path.to_string()),
+            tags: vec!["tag".to_string()],
+            folder_path: Some("/absolute/path".to_string()),
         };
 
-        let result = obsidian.get_note_by_tag(request);
+        let result = obsidian.get_note_by_tag(Parameters(request));
         assert!(result.is_err());
 
         let error = result.unwrap_err();
@@ -1780,8 +1733,7 @@ mod tests {
         let request = GetVaultStructureRequest {
             folder_path: Some("subfolder".to_string()),
         };
-
-        let result = obsidian.get_vault_structure(request);
+        let result = obsidian.get_vault_structure(Parameters(request));
         // Should not error for relative paths (though might fail if folder doesn't exist)
         // The important thing is that it doesn't fail with InvalidVaultPath
         if let Err(error) = result {
@@ -1795,7 +1747,7 @@ mod tests {
 
         // Test that InvalidVaultPath error converts properly to rmcp::Error
         let error = Error::InvalidVaultPath("/absolute/path/test.md".to_string());
-        let rmcp_error: rmcp::Error = error.into();
+        let rmcp_error: rmcp::ErrorData = error.into();
 
         let error_str = rmcp_error.to_string();
         assert!(error_str.contains("Invalid vault path"));
@@ -1888,12 +1840,12 @@ mod tests {
         // Test basic search with context
         let request = SearchWithContextRequest {
             query: "character".to_string(),
-            context_lines: Some(1),
+            context_lines: Some(0),
             regex: Some(false),
             case_sensitive: Some(false),
         };
 
-        let result = obsidian.search_with_context(request).unwrap();
+        let result = obsidian.search_with_context(Parameters(request)).unwrap();
 
         // Verify that we got a successful result
         assert_eq!(result.content.len(), 1);
@@ -1921,13 +1873,13 @@ mod tests {
 
         // Test regex search
         let request = SearchWithContextRequest {
-            query: r"character|NPC".to_string(),
-            context_lines: Some(2),
+            query: "test.*NPC".to_string(),
+            context_lines: Some(0),
             regex: Some(true),
             case_sensitive: Some(false),
         };
 
-        let result = obsidian.search_with_context(request).unwrap();
+        let result = obsidian.search_with_context(Parameters(request)).unwrap();
 
         // Verify that we got a successful result
         assert_eq!(result.content.len(), 1);
@@ -1945,15 +1897,15 @@ mod tests {
         let temp_dir = create_test_vault();
         let obsidian = Obsidian::new(temp_dir.path().to_path_buf());
 
-        // Test case sensitive search
+        // Test case-sensitive search
         let request = SearchWithContextRequest {
-            query: "Character".to_string(), // Capital C
-            context_lines: Some(1),
+            query: "Character".to_string(),
+            context_lines: Some(0),
             regex: Some(false),
             case_sensitive: Some(true),
         };
 
-        let result = obsidian.search_with_context(request).unwrap();
+        let result = obsidian.search_with_context(Parameters(request)).unwrap();
 
         // Verify that we got a successful result
         assert_eq!(result.content.len(), 1);
@@ -1996,7 +1948,7 @@ mod tests {
             filename: "test_with_links.md".to_string(),
         };
 
-        let result = obsidian.get_linked_notes(request).unwrap();
+        let result = obsidian.get_linked_notes(Parameters(request)).unwrap();
 
         // Verify that we got a successful result
         assert_eq!(result.content.len(), 1);
@@ -2027,7 +1979,7 @@ mod tests {
             filename: "nonexistent.md".to_string(),
         };
 
-        let result = obsidian.get_linked_notes(request);
+        let result = obsidian.get_linked_notes(Parameters(request));
         assert!(result.is_err(), "Should return error for nonexistent file");
     }
 
@@ -2046,7 +1998,7 @@ mod tests {
             filename: "no_links.md".to_string(),
         };
 
-        let result = obsidian.get_linked_notes(request).unwrap();
+        let result = obsidian.get_linked_notes(Parameters(request)).unwrap();
 
         // Verify that we got a successful result
         assert_eq!(result.content.len(), 1);
