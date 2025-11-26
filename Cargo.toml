@@ -19,7 +19,7 @@ ignore = { version = "0.4.25", default-features = false }
 libsql = { version = "0.9.29", default-features = false, features = ["core"] }
 llm = { version = "1.3.6", features = ["anthropic"], default-features = false }
 log = { version = "0.4.28", default-features = false }
-model2vec-rs = { version = "0.1.4", default-features = false }
+model2vec-rs = { version = "0.1.4", default-features = false, features = ["onig"] }
 opentelemetry-appender-log = { version = "0.30.0", default-features = false }
 opentelemetry-otlp = { version = "0.30.0", default-features = false, features = [
     "logs",

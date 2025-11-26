@@ -458,9 +458,8 @@ impl ClientBuilder {
             None, // temperature - use default
             None, // timeout - use default
             Some(SYSTEM_PROMPT.to_string()),
-            Some(false), // stream - not using streaming for now
-            None,        // top_p
-            None,        // top_k
+            None, // top_p
+            None, // top_k
             Some(llm_tools),
             None, // tool_choice
             None, // reasoning
