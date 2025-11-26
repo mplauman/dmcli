@@ -332,6 +332,12 @@ impl InnerClient {
                     RawContent::Resource(r) => {
                         log::warn!("Received resource in tool result: {r:?}, skipping");
                     }
+                    RawContent::Audio(a) => {
+                        log::warn!("Got audio content in tool result: {a:?}, skipping");
+                    }
+                    RawContent::ResourceLink(r) => {
+                        log::warn!("Got resource link in tool result: {r:?}, skipping");
+                    }
                 }
             }
         }
@@ -392,8 +398,7 @@ impl ClientBuilder {
         self,
         toolkit: T,
     ) -> Result<Self, Error> {
-        let server = rmcp_in_process_transport::in_process::TokioInProcess::new(toolkit);
-        let server = server.serve().await?;
+        let server = rmcp_in_process_transport::in_process::TokioInProcess::new(toolkit).await?;
         let server = ().into_dyn().serve(server).await?;
 
         let mut mcp_clients = self.mcp_clients;
