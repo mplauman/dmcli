@@ -35,7 +35,7 @@ reqwest = { version = "0.12.24", default-features = false, features = [
     "json",
     "native-tls",
 ] }
-rmcp = { version = "0.8.5", default-features = false, features = ["base64", "server", "client", "macros"] }
+rmcp = { version = "0.10.0", default-features = false, features = ["base64", "server", "client", "macros"] }
 rmcp-in-process-transport = { version = "0.3.1", default-features = false }
 
 serde = { version = "1.0.219", default-features = false, features = [
