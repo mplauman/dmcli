@@ -1,0 +1,19 @@
+[package]
+name = "dmcli"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+caith = { workspace = true }
+clap = { workspace = true, features = [
+  "color",
+  "derive",
+  "error-context",
+  "help",
+  "std",
+  "string",
+  "suggestions",
+  "usage",
+  "wrap_help",
+] }

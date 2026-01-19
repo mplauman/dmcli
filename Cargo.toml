@@ -1,8 +1,23 @@
+[workspace]
+resolver = "3"
+members = [
+  "dmcli",
+]
+
 [package]
-name = "dmcli"
+name = "dmtui"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+caith = { version = "4.2.4", default-features = false }
+clap = { version = "4.5.54", default-features = false }
 
 [dependencies]
 async-channel = "2.3.1"
