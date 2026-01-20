@@ -15,6 +15,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Roll a dice expression using [Caith](https://github.com/Geobert/caith?tab=readme-ov-file#syntax)
     Roll { expr: Vec<String> },
 }
 
