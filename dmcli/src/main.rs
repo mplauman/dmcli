@@ -17,6 +17,15 @@ struct Cli {
 enum Command {
     /// Roll a dice expression using [Caith](https://github.com/Geobert/caith?tab=readme-ov-file#syntax)
     Roll { expr: Vec<String> },
+
+    /// Index the contents of a directory for use as RAG inputs to the AI agent
+    Index {
+        path: String,
+
+        /// Perform the indexing synchronously (this may take a while)
+        #[arg(short, long)]
+        sync: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -28,6 +37,7 @@ fn main() -> Result<()> {
             let result = dmlib::dice::roll(&expr)?;
             result
         }
+        Command::Index { path, sync } => dmlib::index::index(path.as_str(), *sync)?,
     };
 
     match result {
@@ -35,6 +45,8 @@ fn main() -> Result<()> {
         DmlibResult::SingleDiceRoll(value, None) => println!("🎲 {value}"),
         DmlibResult::MultiDiceRoll(values, Some(reason)) => println!("🎲🎲 {values:?} ({reason})"),
         DmlibResult::MultiDiceRoll(values, None) => println!("🎲🎲 {values:?}"),
+        DmlibResult::AsyncIndexResult(path) => println!("Running async index on {path}"),
+        DmlibResult::IndexResult(path) => println!("Finished indexing {path}"),
     }
 
     Ok(())
