@@ -1,5 +1,5 @@
-use caith::Roller;
 use clap::{Parser, Subcommand};
+use dmlib::DmlibResult;
 use result::Result;
 
 mod error;
@@ -21,21 +21,30 @@ enum Command {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    match execute(&cli.command) {
-        Ok(msg) => println!("{}", msg),
-        Err(e) => eprintln!("{}", e),
+    let result = match execute(&cli.command) {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!("{}", e);
+            return Ok(());
+        }
     };
+
+    match result {
+        DmlibResult::SingleDiceRoll(value, Some(reason)) => println!("🎲 {value} ({reason}"),
+        DmlibResult::SingleDiceRoll(value, None) => println!("🎲 {value}"),
+        DmlibResult::MultiDiceRoll(values, Some(reason)) => println!("🎲🎲 {values:?} ({reason})"),
+        DmlibResult::MultiDiceRoll(values, None) => println!("🎲🎲 {values:?}"),
+    }
 
     Ok(())
 }
 
-fn execute(command: &Command) -> Result<String> {
+fn execute(command: &Command) -> Result<DmlibResult> {
     match command {
         Command::Roll { expr } => {
             let expr = expr.join(" ");
-            let roller = Roller::new(&expr)?;
-            let result = roller.roll()?;
-            Ok(format!("🎲 {result}"))
+            let result = dmlib::dice::roll(&expr)?;
+            Ok(result)
         }
     }
 }

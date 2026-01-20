@@ -1,0 +1,8 @@
+[package]
+name = "dmlib"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+caith = { workspace = true }

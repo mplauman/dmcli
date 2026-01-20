@@ -730,8 +730,15 @@ dependencies = [
 name = "dmcli"
 version = "0.1.0"
 dependencies = [
- "caith",
  "clap",
+ "dmlib",
+]
+
+[[package]]
+name = "dmlib"
+version = "0.1.0"
+dependencies = [
+ "caith",
 ]
 
 [[package]]
