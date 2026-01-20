@@ -21,11 +21,11 @@ enum Command {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let result = match execute(&cli.command) {
-        Ok(result) => result,
-        Err(e) => {
-            eprintln!("{}", e);
-            return Ok(());
+    let result = match &cli.command {
+        Command::Roll { expr } => {
+            let expr = expr.join(" ");
+            let result = dmlib::dice::roll(&expr)?;
+            result
         }
     };
 
@@ -37,14 +37,4 @@ fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-fn execute(command: &Command) -> Result<DmlibResult> {
-    match command {
-        Command::Roll { expr } => {
-            let expr = expr.join(" ");
-            let result = dmlib::dice::roll(&expr)?;
-            Ok(result)
-        }
-    }
 }
