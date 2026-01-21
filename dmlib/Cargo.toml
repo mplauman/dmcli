@@ -6,3 +6,15 @@ license.workspace = true
 
 [dependencies]
 caith = { workspace = true }
+libsql = { workspace = true, features = [
+  "core",
+] }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = [
+  "macros",
+  "rt",
+  "rt-multi-thread",
+  "sync",
+] }

@@ -2,7 +2,6 @@ use clap::{Parser, Subcommand};
 use dmlib::DmlibResult;
 use result::Result;
 
-mod error;
 mod result;
 
 #[derive(Parser)]
@@ -26,10 +25,16 @@ enum Command {
         #[arg(short, long)]
         sync: bool,
     },
+
+    /// Run a search against the RAG database for a block of text
+    Search { text: Vec<String> },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    let rt = tokio::runtime::Runtime::new()?;
+    let db = rt.block_on(dmlib::database::Database::new())?;
 
     let result = match &cli.command {
         Command::Roll { expr } => {
@@ -38,6 +43,7 @@ fn main() -> Result<()> {
             result
         }
         Command::Index { path, sync } => dmlib::index::index(path.as_str(), *sync)?,
+        Command::Search { text } => rt.block_on(db.search(&text.join(" "), u64::MAX))?,
     };
 
     match result {
@@ -47,6 +53,7 @@ fn main() -> Result<()> {
         DmlibResult::MultiDiceRoll(values, None) => println!("🎲🎲 {values:?}"),
         DmlibResult::AsyncIndexResult(path) => println!("Running async index on {path}"),
         DmlibResult::IndexResult(path) => println!("Finished indexing {path}"),
+        DmlibResult::SearchResult(texts) => println!("Finshed search: {texts:?}"),
     }
 
     Ok(())

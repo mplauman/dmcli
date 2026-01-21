@@ -17,3 +17,9 @@ clap = { workspace = true, features = [
   "usage",
   "wrap_help",
 ] }
+tokio = { workspace = true, features = [
+  "macros",
+  "rt",
+  "rt-multi-thread",
+  "sync",
+] }

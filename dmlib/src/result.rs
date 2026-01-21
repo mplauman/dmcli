@@ -7,4 +7,5 @@ pub enum DmlibResult {
     MultiDiceRoll(Vec<i64>, Option<String>),
     IndexResult(String),
     AsyncIndexResult(String),
+    SearchResult(Vec<String>),
 }
