@@ -1,4 +1,4 @@
-use crate::{DmlibResult, Error, Result};
+use crate::Result;
 use libsql::{Builder, Connection};
 use tempfile::NamedTempFile;
 
@@ -8,7 +8,7 @@ pub struct Database {
 }
 
 impl Database {
-    pub async fn new() -> core::result::Result<Self, Error> {
+    pub async fn new() -> Result<Self> {
         let file = NamedTempFile::new()?;
         let path = file.path().to_string_lossy().to_string();
 
@@ -32,7 +32,7 @@ impl Database {
         Ok(Database { conn, file })
     }
 
-    pub async fn search(&self, _text: &str, max_results: u64) -> Result {
+    pub async fn search(&self, _text: &str, max_results: u64) -> Result<Vec<String>> {
         let mut rows = self
             .conn
             .query(
@@ -54,7 +54,7 @@ impl Database {
             results.push("hello".to_string());
         }
 
-        Ok(DmlibResult::SearchResult(results))
+        Ok(results)
     }
 }
 
@@ -77,9 +77,7 @@ mod tests {
     #[tokio::test]
     async fn search_empty_database() {
         let db = Database::new().await.unwrap();
-        let DmlibResult::SearchResult(results) = db.search("", 10).await.unwrap() else {
-            panic!()
-        };
+        let results = db.search("", 10).await.unwrap();
 
         assert!(results.is_empty());
     }

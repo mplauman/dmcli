@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use dmlib::DmlibResult;
+use dmlib::{dice, index};
 use result::Result;
 
 mod result;
@@ -36,25 +36,26 @@ fn main() -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let db = rt.block_on(dmlib::database::Database::new())?;
 
-    let result = match &cli.command {
-        Command::Roll { expr } => {
-            let expr = expr.join(" ");
-            let result = dmlib::dice::roll(&expr)?;
-            result
-        }
-        Command::Index { path, sync } => dmlib::index::index(path.as_str(), *sync)?,
-        Command::Search { text } => rt.block_on(db.search(&text.join(" "), u64::MAX))?,
+    match &cli.command {
+        Command::Roll { expr } => match dice::roll(&expr.join(" "))? {
+            dice::DiceRoll::Single(value, reason) => println!(
+                "🎲 {value}{}",
+                reason.map(|r| format!(" ({r})")).unwrap_or_default()
+            ),
+            dice::DiceRoll::Multi(values, reason) => println!(
+                "🎲🎲 {values:?}{}",
+                reason.map(|r| format!(" ({r})")).unwrap_or_default()
+            ),
+        },
+        Command::Index { path, sync } => match index::index(path.as_str(), *sync)? {
+            index::IndexStatus::Complete(path) => println!("Finished indexing {path}"),
+            index::IndexStatus::InProgress(err) => println!("Error indexing {path}: {err}"),
+        },
+        Command::Search { text } => rt
+            .block_on(db.search(&text.join(" "), u64::MAX))?
+            .into_iter()
+            .for_each(|r| println!("{r}")),
     };
-
-    match result {
-        DmlibResult::SingleDiceRoll(value, Some(reason)) => println!("🎲 {value} ({reason}"),
-        DmlibResult::SingleDiceRoll(value, None) => println!("🎲 {value}"),
-        DmlibResult::MultiDiceRoll(values, Some(reason)) => println!("🎲🎲 {values:?} ({reason})"),
-        DmlibResult::MultiDiceRoll(values, None) => println!("🎲🎲 {values:?}"),
-        DmlibResult::AsyncIndexResult(path) => println!("Running async index on {path}"),
-        DmlibResult::IndexResult(path) => println!("Finished indexing {path}"),
-        DmlibResult::SearchResult(texts) => println!("Finshed search: {texts:?}"),
-    }
 
     Ok(())
 }

@@ -1,5 +1,5 @@
 pub use error::Error;
-pub use result::{DmlibResult, Result};
+pub use result::Result;
 
 pub mod database;
 pub mod dice;

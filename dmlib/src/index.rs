@@ -1,9 +1,14 @@
-use crate::result::{DmlibResult, Result};
+use crate::result::Result;
 
-pub fn index(path: &str, sync: bool) -> Result {
+pub fn index(path: &str, sync: bool) -> Result<IndexStatus> {
     if sync {
-        return Ok(DmlibResult::IndexResult(path.to_string()));
+        return Ok(IndexStatus::Complete(path.to_string()));
     }
 
-    return Ok(DmlibResult::AsyncIndexResult(path.to_string()));
+    return Ok(IndexStatus::InProgress(path.to_string()));
+}
+
+pub enum IndexStatus {
+    Complete(String),
+    InProgress(String),
 }
