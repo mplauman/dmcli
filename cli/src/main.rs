@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use dmlib::{dice, index};
+use lib::{database, dice, index};
 use result::Result;
 
 mod result;
@@ -34,7 +34,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let rt = tokio::runtime::Runtime::new()?;
-    let db = rt.block_on(dmlib::database::Database::new())?;
+    let db = rt.block_on(database::Database::new())?;
 
     match &cli.command {
         Command::Roll { expr } => match dice::roll(&expr.join(" "))? {

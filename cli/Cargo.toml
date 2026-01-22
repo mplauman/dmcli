@@ -1,17 +1,22 @@
 [package]
-name = "dmlib"
+name = "cli"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 
 [dependencies]
-caith = { workspace = true }
-libsql = { workspace = true, features = [
-  "core",
+lib = { path = "../lib" }
+clap = { workspace = true, features = [
+  "color",
+  "derive",
+  "error-context",
+  "help",
+  "std",
+  "string",
+  "suggestions",
+  "usage",
+  "wrap_help",
 ] }
-tempfile = { workspace = true }
-
-[dev-dependencies]
 tokio = { workspace = true, features = [
   "macros",
   "rt",
