@@ -10,6 +10,10 @@ libsql = { workspace = true, features = [
   "core",
 ] }
 tempfile = { workspace = true }
+text-splitter = { workspace = true, features = [
+  "markdown",
+] }
+walkdir = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = [

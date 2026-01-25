@@ -49,7 +49,7 @@ fn main() -> Result<()> {
         },
         Command::Index { path, sync } => match index::index(path.as_str(), *sync)? {
             index::IndexStatus::Complete(path) => println!("Finished indexing {path}"),
-            index::IndexStatus::InProgress(err) => println!("Error indexing {path}: {err}"),
+            index::IndexStatus::InProgress(err) => println!("Indexing {path}: {err}"),
         },
         Command::Search { text } => rt
             .block_on(db.search(&text.join(" "), u64::MAX))?

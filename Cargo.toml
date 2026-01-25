@@ -21,7 +21,11 @@ caith = { version = "4.2.4", default-features = false }
 clap = { version = "4.5.54", default-features = false }
 libsql = { version = "0.9.29", default-features = false }
 tempfile = { version = "3.23.0", default-features = false }
+text-splitter = { version = "0.28.0", default-features = false }
 tokio = { version = "1.48.0", default-features = false }
+tokenizers = { version = "0.22.2", default-features = false }
+unwrap-infallible = { version = "1.0.0", default-features = false }
+walkdir = { version = "2.5.0", default-features = false }
 
 [dependencies]
 async-channel = "2.3.1"

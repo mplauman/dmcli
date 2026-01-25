@@ -3,6 +3,7 @@ pub enum Error {
     Roll(String),
     IO(String),
     SQL(String),
+    Index(String),
 }
 
 impl From<caith::RollError> for Error {
