@@ -12,6 +12,10 @@ libsql = { workspace = true, features = [
 tempfile = { workspace = true }
 text-splitter = { workspace = true, features = [
   "markdown",
+  "tokenizers",
+] }
+tokenizers = { workspace = true, features = [
+  "http",
 ] }
 walkdir = { workspace = true }
 

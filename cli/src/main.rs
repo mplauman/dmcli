@@ -4,6 +4,8 @@ use result::Result;
 
 mod result;
 
+const CHUNK_SIZE: usize = 1024;
+
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 #[command(propagate_version = true)]
@@ -47,7 +49,7 @@ fn main() -> Result<()> {
                 reason.map(|r| format!(" ({r})")).unwrap_or_default()
             ),
         },
-        Command::Index { path, sync } => match index::index(path.as_str(), *sync)? {
+        Command::Index { path, sync } => match index::index::<CHUNK_SIZE>(path.as_str(), *sync)? {
             index::IndexStatus::Complete(path) => println!("Finished indexing {path}"),
             index::IndexStatus::InProgress(err) => println!("Indexing {path}: {err}"),
         },
