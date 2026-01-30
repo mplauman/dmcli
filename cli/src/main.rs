@@ -1,10 +1,8 @@
 use clap::{Parser, Subcommand};
-use lib::{database, dice, index};
+use lib::{dice, index};
 use result::Result;
 
 mod result;
-
-const CHUNK_SIZE: usize = 1024;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -20,13 +18,7 @@ enum Command {
     Roll { expr: Vec<String> },
 
     /// Index the contents of a directory for use as RAG inputs to the AI agent
-    Index {
-        path: String,
-
-        /// Perform the indexing synchronously (this may take a while)
-        #[arg(short, long)]
-        sync: bool,
-    },
+    Index { path: String },
 
     /// Run a search against the RAG database for a block of text
     Search { text: Vec<String> },
@@ -36,7 +28,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let rt = tokio::runtime::Runtime::new()?;
-    let db = rt.block_on(database::Database::new())?;
+    let index = rt.block_on(index::DocumentIndex::<1024>::new())?;
 
     match &cli.command {
         Command::Roll { expr } => match dice::roll(&expr.join(" "))? {
@@ -49,12 +41,12 @@ fn main() -> Result<()> {
                 reason.map(|r| format!(" ({r})")).unwrap_or_default()
             ),
         },
-        Command::Index { path, sync } => match index::index::<CHUNK_SIZE>(path.as_str(), *sync)? {
+        Command::Index { path } => match rt.block_on(index.index(&path))? {
             index::IndexStatus::Complete(path) => println!("Finished indexing {path}"),
             index::IndexStatus::InProgress(err) => println!("Indexing {path}: {err}"),
         },
         Command::Search { text } => rt
-            .block_on(db.search(&text.join(" "), u64::MAX))?
+            .block_on(index.search::<7>(&text.join(" ")))?
             .into_iter()
             .for_each(|r| println!("{r}")),
     };
