@@ -17,7 +17,7 @@ impl<const EMBEDDINGS_SIZE: usize> Database<EMBEDDINGS_SIZE> {
 
         conn.execute(
             &format!(
-                "CREATE TABLE IF NOT EXISTS embeddings (
+                "CREATE TABLE IF NOT EXISTS text_embeddings (
                     text TEXT NOT NULL,
                     embedding F32_BLOB({EMBEDDINGS_SIZE})
                 )"
@@ -27,7 +27,7 @@ impl<const EMBEDDINGS_SIZE: usize> Database<EMBEDDINGS_SIZE> {
         .await?;
 
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS embeddings_embedding_idx ON embeddings (libsql_vector_idx(embedding))",
+            "CREATE INDEX IF NOT EXISTS text_embeddings_embedding_idx ON text_embeddings (libsql_vector_idx(embedding))",
             (),
         ).await?;
 
@@ -42,7 +42,7 @@ impl<const EMBEDDINGS_SIZE: usize> Database<EMBEDDINGS_SIZE> {
         let mut rows = self
             .conn
             .query(
-                "SELECT * FROM embeddings ORDER BY vector_distance_cos(embedding, ?) ASC LIMIT ?",
+                "SELECT text FROM text_embeddings ORDER BY vector_distance_cos(embedding, ?) ASC LIMIT ?",
                 libsql::params![
                     unsafe {
                         let p = embeddings.as_ptr() as *mut u8;
@@ -56,14 +56,26 @@ impl<const EMBEDDINGS_SIZE: usize> Database<EMBEDDINGS_SIZE> {
             .await?;
 
         let mut results = Vec::new();
-        while let Some(_row) = rows.next().await? {
-            results.push("hello".to_string());
+        while let Some(row) = rows.next().await? {
+            results.push(row.get_str(0)?.to_string());
         }
 
         Ok(results)
     }
 
-    pub async fn insert(&self, _embeddings: &[f32; EMBEDDINGS_SIZE]) -> Result<()> {
+    pub async fn insert(&self, _embedding: &[f32; EMBEDDINGS_SIZE], _text: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO text_embeddings VALUES(?, ?)",
+                libsql::params![_text, unsafe {
+                    let p = _embedding.as_ptr() as *mut u8;
+                    let len = _embedding.len() * std::mem::size_of::<f32>();
+
+                    std::slice::from_raw_parts(p, len)
+                },],
+            )
+            .await?;
+
         Ok(())
     }
 }
@@ -91,5 +103,16 @@ mod tests {
         let results = db.find_similar(&embeddings, 10).await.unwrap();
 
         assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn insert_and_find() {
+        let db = Database::<5>::new().await.unwrap();
+        let embeddings: [f32; 5] = [0.0, 0.0, 0.0, 0.0, 0.0];
+
+        db.insert(&embeddings, "hello").await.unwrap();
+        let results = db.find_similar(&embeddings, 10).await.unwrap();
+
+        assert_eq!(results, vec!["hello".to_string()]);
     }
 }

@@ -60,10 +60,7 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
                 let sum: u32 = ids.iter().sum();
                 let sum = sum as f32;
 
-                let mut normalized = ids
-                    .into_iter()
-                    .map(|id| *id as f32 / sum)
-                    .collect::<Vec<_>>();
+                let mut normalized = ids.iter().map(|id| *id as f32 / sum).collect::<Vec<_>>();
 
                 normalized.resize(CHUNK_SIZE, 0.0);
 
@@ -76,14 +73,11 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
         Ok(encodings)
     }
 
-    async fn insert<'a, E>(&mut self, texts: Vec<E>) -> Result<()>
-    where
-        E: Into<EncodeInput<'a>> + Send,
-    {
-        let encodings = self.encode(texts)?;
+    async fn insert(&mut self, texts: Vec<&str>) -> Result<()> {
+        let encodings = self.encode(texts.clone())?;
 
-        for encoding in encodings {
-            self.db.insert(&encoding).await?;
+        for (encoding, text) in encodings.into_iter().zip(texts.into_iter()) {
+            self.db.insert(&encoding, text).await?;
         }
 
         Ok(())
@@ -130,7 +124,7 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
             self.insert(chunks).await?;
         }
 
-        return Ok(IndexStatus::Complete(path.to_string()));
+        Ok(IndexStatus::Complete(path.to_string()))
     }
 
     pub async fn index_str(&mut self, text: &str) -> Result<IndexStatus> {

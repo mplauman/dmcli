@@ -2,7 +2,7 @@ use crate::result::Result;
 use caith::{Roller, SingleRollResult};
 
 pub fn roll(expr: &str) -> Result<DiceRoll> {
-    let roller = Roller::new(&expr)?;
+    let roller = Roller::new(expr)?;
     let result = roller.roll()?;
 
     let reason = result.get_reason().map(ToString::to_string);
