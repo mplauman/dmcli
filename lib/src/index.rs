@@ -17,8 +17,7 @@ const MODEL_DIMS: usize = 384;
 pub struct DocumentIndex<const CHUNK_SIZE: usize> {
     db: crate::database::Database<MODEL_DIMS>,
     tokenizer: Tokenizer,
-    _model: BertModel,
-    _tok: Tokenizer,
+    model: BertModel,
 }
 
 impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
@@ -51,10 +50,8 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
 
         let result = Self {
             db: crate::database::Database::<MODEL_DIMS>::new().await?,
-            tokenizer: Tokenizer::from_pretrained("bert-base-uncased", None)
-                .map_err(|e| Error::Index(format!("Failed to initialize tokenizer: {e:?}")))?,
-            _model: model,
-            _tok: tokenizer,
+            tokenizer,
+            model,
         };
 
         Ok(result)
@@ -89,9 +86,14 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
         E: Into<EncodeInput<'a>> + Send + std::fmt::Display,
     {
         let len = input.len();
+        println!("Encoding {len} inputs");
+
+        if len == 0 {
+            return Ok(vec![]);
+        }
 
         let device = Device::Cpu;
-        let mut tokenizer = self._tok.clone();
+        let mut tokenizer = self.tokenizer.clone();
         if let Some(pp) = tokenizer.get_padding_mut() {
             pp.strategy = tokenizers::PaddingStrategy::BatchLongest
         } else {
@@ -127,7 +129,7 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
         let token_type_ids = token_ids.zeros_like()?;
 
         let embeddings = self
-            ._model
+            .model
             .forward(&token_ids, &token_type_ids, Some(&attention_mask))?;
 
         let embeddings = {
@@ -206,6 +208,8 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
         for entry in walker {
             let contents = read_to_string(&entry)?;
             let chunks = self.split_markdwon(&contents)?;
+
+            println!("Split {} into {}", entry.display(), chunks.len());
 
             self.insert(chunks).await?;
         }
