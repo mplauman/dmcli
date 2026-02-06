@@ -1,17 +1,21 @@
-use candle_core::Device;
+use candle_core::{Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config, DTYPE};
 use hf_hub::{Repo, RepoType, api::sync::Api};
 use std::fs::read_to_string;
 use text_splitter::{ChunkConfig, MarkdownSplitter, TextSplitter};
-use tokenizers::{EncodeInput, Tokenizer};
+use tokenizers::{EncodeInput, PaddingParams, Tokenizer};
 use walkdir::{DirEntry, WalkDir};
 
 use crate::error::Error;
 use crate::result::Result;
 
+const MODEL_NAME: &'static str = "sentence-transformers/all-MiniLM-L6-v2";
+const MODEL_REVISION: &'static str = "refs/pr/21";
+const MODEL_DIMS: usize = 384;
+
 pub struct DocumentIndex<const CHUNK_SIZE: usize> {
-    db: crate::database::Database<CHUNK_SIZE>,
+    db: crate::database::Database<MODEL_DIMS>,
     tokenizer: Tokenizer,
     _model: BertModel,
     _tok: Tokenizer,
@@ -20,10 +24,12 @@ pub struct DocumentIndex<const CHUNK_SIZE: usize> {
 impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
     pub async fn new() -> Result<Self> {
         let device = Device::Cpu;
-        let model_id = "sentence-transformers/all-MiniLM-L6-v2".to_string();
-        let revision = "refs/pr/21".to_string();
 
-        let repo = Repo::with_revision(model_id, RepoType::Model, revision);
+        let repo = Repo::with_revision(
+            MODEL_NAME.to_string(),
+            RepoType::Model,
+            MODEL_REVISION.to_string(),
+        );
         let (config_filename, tokenizer_filename, weights_filename) = {
             let api = Api::new()?;
             let api = api.repo(repo);
@@ -44,7 +50,7 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
         let model = BertModel::load(vb, &config)?;
 
         let result = Self {
-            db: crate::database::Database::<CHUNK_SIZE>::new().await?,
+            db: crate::database::Database::<MODEL_DIMS>::new().await?,
             tokenizer: Tokenizer::from_pretrained("bert-base-uncased", None)
                 .map_err(|e| Error::Index(format!("Failed to initialize tokenizer: {e:?}")))?,
             _model: model,
@@ -78,31 +84,83 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
         Ok(chunks)
     }
 
-    fn encode<'a, E>(&self, input: Vec<E>) -> Result<Vec<[f32; CHUNK_SIZE]>>
+    pub fn encode<'a, E>(&self, input: Vec<E>) -> Result<Vec<[f32; MODEL_DIMS]>>
     where
-        E: Into<EncodeInput<'a>> + Send,
+        E: Into<EncodeInput<'a>> + Send + std::fmt::Display,
     {
-        let encodings: Vec<[f32; CHUNK_SIZE]> = self
-            .tokenizer
-            .encode_batch_fast(input, false)
-            .map_err(|e| Error::Index(format!("Failed to encode batch: {e:?}")))?
-            .into_iter()
-            .map(|e| {
-                let ids = e.get_ids();
-                let sum: u32 = ids.iter().sum();
-                let sum = sum as f32;
+        let len = input.len();
 
-                let mut normalized = ids.iter().map(|id| *id as f32 / sum).collect::<Vec<_>>();
+        let device = Device::Cpu;
+        let mut tokenizer = self._tok.clone();
+        if let Some(pp) = tokenizer.get_padding_mut() {
+            pp.strategy = tokenizers::PaddingStrategy::BatchLongest
+        } else {
+            let pp = PaddingParams {
+                strategy: tokenizers::PaddingStrategy::BatchLongest,
+                ..Default::default()
+            };
+            tokenizer.with_padding(Some(pp));
+        }
 
-                normalized.resize(CHUNK_SIZE, 0.0);
+        let tokens = tokenizer
+            .encode_batch(input, true)
+            .map_err(|e| Error::Index(format!("Failed to encode batch: {e:?}")))?;
 
-                normalized
-                    .try_into()
-                    .expect("Chunking should never return too many tokens")
+        let token_ids = tokens
+            .iter()
+            .map(|tokens| {
+                let tokens = tokens.get_ids().to_vec();
+                Ok(Tensor::new(tokens.as_slice(), &device)?)
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
 
-        Ok(encodings)
+        let attention_mask = tokens
+            .iter()
+            .map(|tokens| {
+                let tokens = tokens.get_attention_mask().to_vec();
+                Ok(Tensor::new(tokens.as_slice(), &device)?)
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let token_ids = Tensor::stack(&token_ids, 0)?;
+        let attention_mask = Tensor::stack(&attention_mask, 0)?;
+        let token_type_ids = token_ids.zeros_like()?;
+
+        let embeddings = self
+            ._model
+            .forward(&token_ids, &token_type_ids, Some(&attention_mask))?;
+
+        let embeddings = {
+            // Apply avg-pooling by taking the mean embedding value for all
+            // tokens (after applying the attention mask from tokenization).
+            // This should produce the same numeric result as the
+            // `sentence_transformers` Python library.
+            let attention_mask_for_pooling = attention_mask.to_dtype(DTYPE)?.unsqueeze(2)?;
+            let sum_mask = attention_mask_for_pooling.sum(1)?;
+            let embeddings = (embeddings.broadcast_mul(&attention_mask_for_pooling)?).sum(1)?;
+            embeddings.broadcast_div(&sum_mask)?
+        };
+
+        let embeddings = DocumentIndex::<CHUNK_SIZE>::normalize_l2(&embeddings)?;
+
+        let mut result: Vec<[f32; MODEL_DIMS]> = Vec::new();
+        for i in 0..len {
+            result.push(
+                embeddings
+                    .get(i)
+                    .unwrap()
+                    .to_vec1::<f32>()
+                    .unwrap()
+                    .try_into()
+                    .unwrap(),
+            );
+        }
+
+        Ok(result)
+    }
+
+    fn normalize_l2(v: &Tensor) -> Result<Tensor> {
+        Ok(v.broadcast_div(&v.sqr()?.sum_keepdim(1)?.sqrt()?)?)
     }
 
     async fn insert(&mut self, texts: Vec<&str>) -> Result<()> {
@@ -117,7 +175,6 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
 
     pub async fn search<const MAX_RESULTS: u64>(&self, text: &str) -> Result<Vec<String>> {
         let chunks = self.split_text(text)?;
-        println!(" => {} chunks", chunks.len());
 
         let encodings = self.encode(chunks)?;
 
@@ -147,11 +204,8 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
             .filter(|e| e.extension().and_then(|e| e.to_str()) == Some("md"));
 
         for entry in walker {
-            println!("Processing {entry:?}");
-
             let contents = read_to_string(&entry)?;
             let chunks = self.split_markdwon(&contents)?;
-            println!(" => {} chunks", chunks.len());
 
             self.insert(chunks).await?;
         }
@@ -161,7 +215,6 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
 
     pub async fn index_str(&mut self, text: &str) -> Result<IndexStatus> {
         let chunks = self.split_text(text)?;
-        println!(" => {} chunks", chunks.len());
 
         self.insert(chunks).await?;
 
@@ -185,5 +238,29 @@ mod tests {
         let results = index.search::<10>("Hello, world!").await.unwrap();
 
         assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn encode_sentences() {
+        let mut index = DocumentIndex::<30>::new().await.unwrap();
+
+        let sentences = vec![
+            "The cat sits outside",
+            "A man is playing guitar",
+            "I love pasta",
+            "The new movie is awesome",
+            "The cat plays in the garden",
+            "A woman watches TV",
+            "The new movie is so great",
+            "Do you like pizza?",
+        ];
+        for s in sentences {
+            index.index_str(s).await.unwrap();
+        }
+
+        let results = index.search::<2>("The movie").await.unwrap();
+        for result in results {
+            println!("{result}");
+        }
     }
 }
