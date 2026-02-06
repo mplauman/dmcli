@@ -28,7 +28,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let rt = tokio::runtime::Runtime::new()?;
-    let index = rt.block_on(index::DocumentIndex::<1024>::new())?;
+    let mut index = rt.block_on(index::DocumentIndex::<1024>::new())?;
 
     match &cli.command {
         Command::Roll { expr } => match dice::roll(&expr.join(" "))? {

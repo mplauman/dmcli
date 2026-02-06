@@ -1,3 +1,7 @@
+use candle_core::Device;
+use candle_nn::VarBuilder;
+use candle_transformers::models::bert::{BertModel, Config, DTYPE};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use std::fs::read_to_string;
 use text_splitter::{ChunkConfig, MarkdownSplitter, TextSplitter};
 use tokenizers::{EncodeInput, Tokenizer};
@@ -9,14 +13,42 @@ use crate::result::Result;
 pub struct DocumentIndex<const CHUNK_SIZE: usize> {
     db: crate::database::Database<CHUNK_SIZE>,
     tokenizer: Tokenizer,
+    _model: BertModel,
+    _tok: Tokenizer,
 }
 
 impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
     pub async fn new() -> Result<Self> {
+        let device = Device::Cpu;
+        let model_id = "sentence-transformers/all-MiniLM-L6-v2".to_string();
+        let revision = "refs/pr/21".to_string();
+
+        let repo = Repo::with_revision(model_id, RepoType::Model, revision);
+        let (config_filename, tokenizer_filename, weights_filename) = {
+            let api = Api::new()?;
+            let api = api.repo(repo);
+            let config = api.get("config.json")?;
+            let tokenizer = api.get("tokenizer.json")?;
+            let weights = api.get("model.safetensors")?;
+            (config, tokenizer, weights)
+        };
+
+        let config = std::fs::read_to_string(config_filename)?;
+        let config: Config = serde_json::from_str(&config)?;
+        let tokenizer = Tokenizer::from_file(tokenizer_filename)
+            .map_err(|e| Error::Index(format!("Failed to initialize tokenizer: {e:?}")))?;
+
+        let vb =
+            unsafe { VarBuilder::from_mmaped_safetensors(&[weights_filename], DTYPE, &device)? };
+
+        let model = BertModel::load(vb, &config)?;
+
         let result = Self {
             db: crate::database::Database::<CHUNK_SIZE>::new().await?,
             tokenizer: Tokenizer::from_pretrained("bert-base-uncased", None)
                 .map_err(|e| Error::Index(format!("Failed to initialize tokenizer: {e:?}")))?,
+            _model: model,
+            _tok: tokenizer,
         };
 
         Ok(result)

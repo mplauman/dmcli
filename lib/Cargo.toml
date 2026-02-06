@@ -6,8 +6,17 @@ license.workspace = true
 
 [dependencies]
 caith = { workspace = true }
+candle-core = { workspace = true, features = [
+] }
+candle-nn = { workspace = true, features = []}
+candle-transformers = { workspace = true, features = [
+] }
+hf-hub = { workspace = true, features = [
+] }
 libsql = { workspace = true, features = [
   "core",
+] }
+serde_json = { workspace = true, features = [
 ] }
 tempfile = { workspace = true }
 text-splitter = { workspace = true, features = [
