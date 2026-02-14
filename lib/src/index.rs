@@ -3,6 +3,7 @@ use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config, DTYPE};
 use hf_hub::{Repo, RepoType, api::sync::Api};
 use std::fs::read_to_string;
+use std::path::Path;
 use text_splitter::{ChunkConfig, MarkdownSplitter, TextSplitter};
 use tokenizers::{EncodeInput, PaddingParams, Tokenizer};
 use walkdir::{DirEntry, WalkDir};
@@ -95,7 +96,7 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
         Ok(chunks)
     }
 
-    pub fn encode<'a, E>(&self, input: Vec<E>) -> Result<Vec<[f32; MODEL_DIMS]>>
+    fn encode<'a, E>(&self, input: Vec<E>) -> Result<Vec<[f32; MODEL_DIMS]>>
     where
         E: Into<EncodeInput<'a>> + Send,
     {
@@ -192,7 +193,7 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
         Ok(results)
     }
 
-    pub async fn index(&mut self, path: &str) -> Result<IndexStatus> {
+    pub async fn index_path(&mut self, path: impl AsRef<Path>) -> Result<()> {
         let walker = WalkDir::new(path)
             .into_iter()
             .filter_entry(|e| {
@@ -217,21 +218,16 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
             self.insert(chunks).await?;
         }
 
-        Ok(IndexStatus::Complete(path.to_string()))
+        Ok(())
     }
 
-    pub async fn index_str(&mut self, text: &str) -> Result<IndexStatus> {
+    pub async fn index_str(&mut self, text: &str) -> Result<()> {
         let chunks = self.split_text(text)?;
 
         self.insert(chunks).await?;
 
-        Ok(IndexStatus::Complete(text.to_string()))
+        Ok(())
     }
-}
-
-pub enum IndexStatus {
-    Complete(String),
-    InProgress(String),
 }
 
 #[cfg(test)]

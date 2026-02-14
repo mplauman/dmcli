@@ -41,9 +41,9 @@ fn main() -> Result<()> {
                 reason.map(|r| format!(" ({r})")).unwrap_or_default()
             ),
         },
-        Command::Index { path } => match rt.block_on(index.index(&path))? {
-            index::IndexStatus::Complete(path) => println!("Finished indexing {path}"),
-            index::IndexStatus::InProgress(err) => println!("Indexing {path}: {err}"),
+        Command::Index { path } => match rt.block_on(index.index_path(&path)) {
+            Ok(_) => println!("Finished indexing {path}"),
+            Err(e) => println!("Indexing failed: {:?}", e),
         },
         Command::Search { text } => rt
             .block_on(index.search::<7>(&text.join(" ")))?
