@@ -16,6 +16,7 @@ const MODEL_DIMS: usize = 384;
 
 pub struct DocumentIndex<const CHUNK_SIZE: usize> {
     db: crate::database::Database<MODEL_DIMS>,
+    device: Device,
     tokenizer: Tokenizer,
     model: BertModel,
 }
@@ -40,8 +41,20 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
 
         let config = std::fs::read_to_string(config_filename)?;
         let config: Config = serde_json::from_str(&config)?;
-        let tokenizer = Tokenizer::from_file(tokenizer_filename)
+        let mut tokenizer = Tokenizer::from_file(tokenizer_filename)
             .map_err(|e| Error::Index(format!("Failed to initialize tokenizer: {e:?}")))?;
+
+        if let Some(pp) = tokenizer.get_padding_mut() {
+            println!("Updating tokenizer padding strategy to BatchLongest");
+            pp.strategy = tokenizers::PaddingStrategy::BatchLongest
+        } else {
+            println!("Creating tokenization padding strategy with BatchLongest");
+            let pp = PaddingParams {
+                strategy: tokenizers::PaddingStrategy::BatchLongest,
+                ..Default::default()
+            };
+            tokenizer.with_padding(Some(pp));
+        }
 
         let vb =
             unsafe { VarBuilder::from_mmaped_safetensors(&[weights_filename], DTYPE, &device)? };
@@ -50,6 +63,7 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
 
         let result = Self {
             db: crate::database::Database::<MODEL_DIMS>::new().await?,
+            device,
             tokenizer,
             model,
         };
@@ -83,7 +97,7 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
 
     pub fn encode<'a, E>(&self, input: Vec<E>) -> Result<Vec<[f32; MODEL_DIMS]>>
     where
-        E: Into<EncodeInput<'a>> + Send + std::fmt::Display,
+        E: Into<EncodeInput<'a>> + Send,
     {
         let len = input.len();
         println!("Encoding {len} inputs");
@@ -92,19 +106,8 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
             return Ok(vec![]);
         }
 
-        let device = Device::Cpu;
-        let mut tokenizer = self.tokenizer.clone();
-        if let Some(pp) = tokenizer.get_padding_mut() {
-            pp.strategy = tokenizers::PaddingStrategy::BatchLongest
-        } else {
-            let pp = PaddingParams {
-                strategy: tokenizers::PaddingStrategy::BatchLongest,
-                ..Default::default()
-            };
-            tokenizer.with_padding(Some(pp));
-        }
-
-        let tokens = tokenizer
+        let tokens = self
+            .tokenizer
             .encode_batch(input, true)
             .map_err(|e| Error::Index(format!("Failed to encode batch: {e:?}")))?;
 
@@ -112,7 +115,7 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
             .iter()
             .map(|tokens| {
                 let tokens = tokens.get_ids().to_vec();
-                Ok(Tensor::new(tokens.as_slice(), &device)?)
+                Ok(Tensor::new(tokens.as_slice(), &self.device)?)
             })
             .collect::<Result<Vec<_>>>()?;
 
@@ -120,7 +123,7 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
             .iter()
             .map(|tokens| {
                 let tokens = tokens.get_attention_mask().to_vec();
-                Ok(Tensor::new(tokens.as_slice(), &device)?)
+                Ok(Tensor::new(tokens.as_slice(), &self.device)?)
             })
             .collect::<Result<Vec<_>>>()?;
 
