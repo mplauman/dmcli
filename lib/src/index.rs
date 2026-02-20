@@ -2,6 +2,8 @@ use candle_core::{Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config, DTYPE};
 use hf_hub::{Repo, RepoType, api::sync::Api};
+use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
+use sha2::{Digest, Sha256};
 use std::fs::read_to_string;
 use std::path::Path;
 use text_splitter::{ChunkConfig, MarkdownSplitter, TextSplitter};
@@ -14,6 +16,93 @@ use crate::result::Result;
 const MODEL_NAME: &'static str = "sentence-transformers/all-MiniLM-L6-v2";
 const MODEL_REVISION: &'static str = "refs/pr/21";
 const MODEL_DIMS: usize = 384;
+
+#[derive(Debug, Clone)]
+struct ChunkPayload<'a> {
+    pub content: String,
+    pub path: &'a Path,
+    pub headers: Vec<String>,
+}
+
+fn process_markdown<'a>(content: &'a str, path: &'a Path) -> Vec<ChunkPayload<'a>> {
+    let options = pulldown_cmark::Options::ENABLE_TABLES;
+    let parser = Parser::new_ext(content, options);
+    let mut chunks = Vec::new();
+    let mut header_stack: Vec<String> = Vec::new();
+    let mut current_text = String::new();
+    let mut in_header = false;
+    let mut current_header_text = String::new();
+    let mut current_header_level: usize = 0;
+
+    for event in parser {
+        match event {
+            Event::Start(Tag::Heading { level, .. }) => {
+                // If we have accumulated text, emit a chunk with the *previous* header stack
+                let trimmed = current_text.trim();
+                if !trimmed.is_empty() {
+                    // Normalize whitespace for the final content
+                    let normalized_content =
+                        trimmed.split_whitespace().collect::<Vec<&str>>().join(" ");
+
+                    chunks.push(ChunkPayload {
+                        content: normalized_content,
+                        path: path,
+                        headers: header_stack.clone(),
+                    });
+                    current_text.clear();
+                }
+
+                in_header = true;
+                current_header_level = match level {
+                    HeadingLevel::H1 => 1,
+                    HeadingLevel::H2 => 2,
+                    HeadingLevel::H3 => 3,
+                    HeadingLevel::H4 => 4,
+                    HeadingLevel::H5 => 5,
+                    HeadingLevel::H6 => 6,
+                };
+                current_header_text.clear();
+            }
+            Event::End(TagEnd::Heading(_)) => {
+                in_header = false;
+                // Update header stack
+                // If level is 1, stack should have 0 elements before push.
+                // If level is 2, stack should have 1 element before push.
+                let target_depth = current_header_level.saturating_sub(1);
+                while header_stack.len() > target_depth {
+                    header_stack.pop();
+                }
+                header_stack.push(current_header_text.trim().to_string());
+            }
+            Event::Text(text) => match in_header {
+                true => current_header_text.push_str(&text),
+                false => current_text.push_str(&text),
+            },
+            Event::Code(text) => match in_header {
+                true => current_header_text.push_str(&text),
+                false => current_text.push_str(&text),
+            },
+            Event::SoftBreak | Event::HardBreak => match in_header {
+                true => current_header_text.push(' '),
+                false => current_text.push('\n'),
+            },
+            _ => {}
+        }
+    }
+
+    // Emit final chunk
+    let trimmed = current_text.trim();
+    if !trimmed.is_empty() {
+        let normalized_content = trimmed.split_whitespace().collect::<Vec<&str>>().join(" ");
+        chunks.push(ChunkPayload {
+            content: normalized_content,
+            path: path,
+            headers: header_stack,
+        });
+    }
+
+    chunks
+}
 
 pub struct DocumentIndex<const CHUNK_SIZE: usize> {
     db: crate::database::Database<MODEL_DIMS>,
@@ -80,18 +169,6 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
 
         let splitter = TextSplitter::new(chunk_config);
         let chunks: Vec<&str> = splitter.chunks(text).collect();
-
-        Ok(chunks)
-    }
-
-    fn split_markdwon<'a>(&self, markdown: &'a str) -> Result<Vec<&'a str>> {
-        let chunk_config = ChunkConfig::new(CHUNK_SIZE)
-            .with_sizer(&self.tokenizer)
-            .with_overlap(CHUNK_SIZE / 64)
-            .expect("Overlap is a sane value");
-
-        let splitter = MarkdownSplitter::new(chunk_config);
-        let chunks: Vec<&str> = splitter.chunks(markdown).collect();
 
         Ok(chunks)
     }
@@ -194,6 +271,13 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
     }
 
     pub async fn index_path(&mut self, path: impl AsRef<Path>) -> Result<()> {
+        let chunk_config = ChunkConfig::new(CHUNK_SIZE)
+            .with_sizer(&self.tokenizer)
+            .with_overlap(CHUNK_SIZE / 64)
+            .expect("Overlap is a sane value");
+
+        let splitter = MarkdownSplitter::new(chunk_config);
+
         let walker = WalkDir::new(path)
             .into_iter()
             .filter_entry(|e| {
@@ -211,11 +295,39 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
 
         for entry in walker {
             let contents = read_to_string(&entry)?;
-            let chunks = self.split_markdwon(&contents)?;
+            let chunks = process_markdown(&contents, entry.as_path());
 
-            println!("Split {} into {}", entry.display(), chunks.len());
+            let chunks = chunks
+                .into_iter()
+                .flat_map(|chunk| {
+                    splitter
+                        .chunks(&chunk.content)
+                        .into_iter()
+                        .map(|subchunk| subchunk.trim().to_string())
+                        .filter(|content| !content.is_empty())
+                        .map(|subchunk| {
+                            (
+                                subchunk.to_string(),
+                                chunk.path.to_path_buf(),
+                                hex::encode(Sha256::digest(subchunk.as_bytes())),
+                                chunk.headers.join("/"),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            let texts = chunks
+                .iter()
+                .map(|chunk| chunk.0.as_str())
+                .collect::<Vec<_>>();
+            let embeddings = self.encode(texts)?;
 
-            self.insert(chunks).await?;
+            for (chunk, embedding) in chunks.into_iter().zip(embeddings.into_iter()) {
+                println!("Inserting {}#{}", chunk.1.display(), chunk.3);
+                self.db
+                    .insert_doc_chunk(&embedding, &chunk.0, &chunk.1, &chunk.2, &chunk.3)
+                    .await?;
+            }
         }
 
         Ok(())
@@ -264,6 +376,93 @@ mod tests {
         let results = index.search::<2>("The movie").await.unwrap();
         for result in results {
             println!("{result}");
+        }
+    }
+
+    #[test]
+    fn test_ignore_metadata() {
+        let content = r#"---
+title: Test
+---
+"#;
+        let chunks = process_markdown(content, Path::new("test.md"));
+        assert_eq!(chunks.len(), 0);
+    }
+
+    #[test]
+    fn test_process_markdown_simple() {
+        let content = r#"---
+title: Test
+---
+# Header 1
+Some text.
+
+## Header 2
+More text.
+"#;
+        let chunks = process_markdown(content, Path::new("test.md"));
+        assert_eq!(chunks.len(), 2);
+
+        assert_eq!(chunks[0].headers, vec!["Header 1"]);
+        assert_eq!(chunks[0].content, "Some text.");
+
+        assert_eq!(chunks[1].headers, vec!["Header 1", "Header 2"]);
+        assert_eq!(chunks[1].content, "More text.");
+    }
+
+    #[test]
+    fn test_process_markdown_complex_hierarchy() {
+        let content = r#"
+# H1
+Text 1
+
+### H3
+Text 3
+
+## H2
+Text 2
+"#;
+        let chunks = process_markdown(content, Path::new("test.md"));
+        assert_eq!(chunks.len(), 3);
+
+        assert_eq!(chunks[0].headers, vec!["H1"]);
+        assert_eq!(chunks[0].content, "Text 1");
+
+        assert_eq!(chunks[1].headers, vec!["H1", "H3"]);
+        assert_eq!(chunks[1].content, "Text 3");
+
+        assert_eq!(chunks[2].headers, vec!["H1", "H2"]);
+        assert_eq!(chunks[2].content, "Text 2");
+    }
+
+    #[test]
+    fn test_process_markdown_links_images() {
+        let content = r#"
+# Links
+Here is a [link](https://example.com) and an ![image](img.png).
+"#;
+        let chunks = process_markdown(content, Path::new("test.md"));
+        assert_eq!(chunks.len(), 1);
+        // "Here is a " (Text)
+        // "link" (Text from link)
+        // " and an " (Text)
+        // "image" (Text from image alt)
+        // "." (Text)
+        // Normalized with spaces:
+        assert_eq!(chunks[0].content, "Here is a link and an image.");
+    }
+
+    #[test]
+    fn test_hashes_map() {
+        let one = process_markdown("hello, world!", Path::new("one.md"));
+        let two = process_markdown("hello, world!", Path::new("two.md"));
+
+        for (a, b) in one.into_iter().zip(two.into_iter()) {
+            assert_eq!(a.content, b.content);
+            assert_eq!(a.headers, b.headers);
+
+            assert_eq!(a.path, Path::new("one.md"));
+            assert_eq!(b.path, Path::new("two.md"));
         }
     }
 }

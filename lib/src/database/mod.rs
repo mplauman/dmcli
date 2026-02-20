@@ -1,5 +1,6 @@
 use crate::Result;
 use libsql::{Builder, Connection};
+use std::path::Path;
 use tempfile::NamedTempFile;
 
 pub struct Database<const EMBEDDINGS_SIZE: usize> {
@@ -15,21 +16,8 @@ impl<const EMBEDDINGS_SIZE: usize> Database<EMBEDDINGS_SIZE> {
         let db = Builder::new_local(&path).build().await?;
         let conn = db.connect()?;
 
-        conn.execute(
-            &format!(
-                "CREATE TABLE IF NOT EXISTS text_embeddings (
-                    text TEXT NOT NULL,
-                    embedding F32_BLOB({EMBEDDINGS_SIZE})
-                )"
-            ),
-            (),
-        )
-        .await?;
-
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS text_embeddings_embedding_idx ON text_embeddings (libsql_vector_idx(embedding))",
-            (),
-        ).await?;
+        let init_sql = format!(include_str!("init.sql"), EMBEDDINGS_SIZE);
+        conn.execute(&init_sql, ()).await?;
 
         Ok(Database { conn, file })
     }
@@ -61,6 +49,17 @@ impl<const EMBEDDINGS_SIZE: usize> Database<EMBEDDINGS_SIZE> {
         }
 
         Ok(results)
+    }
+
+    pub async fn insert_doc_chunk(
+        &self,
+        _embedding: &[f32; EMBEDDINGS_SIZE],
+        _content: &str,
+        _path: &Path,
+        _hash: &str,
+        _section: &str,
+    ) -> Result<()> {
+        Ok(())
     }
 
     pub async fn insert(&self, _embedding: &[f32; EMBEDDINGS_SIZE], _text: &str) -> Result<()> {

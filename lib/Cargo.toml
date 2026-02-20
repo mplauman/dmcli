@@ -11,13 +11,16 @@ candle-core = { workspace = true, features = [
 candle-nn = { workspace = true, features = []}
 candle-transformers = { workspace = true, features = [
 ] }
+hex = { workspace = true, features = ["alloc"] }
 hf-hub = { workspace = true, features = [
 ] }
 libsql = { workspace = true, features = [
   "core",
 ] }
+pulldown-cmark = { workspace = true, features = [] }
 serde_json = { workspace = true, features = [
 ] }
+sha2 = { workspace = true, features = [] }
 tempfile = { workspace = true }
 text-splitter = { workspace = true, features = [
   "markdown",
