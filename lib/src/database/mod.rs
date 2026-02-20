@@ -30,7 +30,7 @@ impl<const EMBEDDINGS_SIZE: usize> Database<EMBEDDINGS_SIZE> {
         let mut rows = self
             .conn
             .query(
-                "SELECT text FROM text_embeddings ORDER BY vector_distance_cos(embedding, ?) ASC LIMIT ?",
+                include_str!("select_similar_text.sql"),
                 libsql::params![
                     unsafe {
                         let p = embeddings.as_ptr() as *mut u8;
@@ -62,16 +62,19 @@ impl<const EMBEDDINGS_SIZE: usize> Database<EMBEDDINGS_SIZE> {
         Ok(())
     }
 
-    pub async fn insert(&self, _embedding: &[f32; EMBEDDINGS_SIZE], _text: &str) -> Result<()> {
+    pub async fn insert(&self, _embedding: &[f32; EMBEDDINGS_SIZE], text: &str) -> Result<()> {
         self.conn
             .execute(
-                "INSERT INTO text_embeddings VALUES(?, ?)",
-                libsql::params![_text, unsafe {
-                    let p = _embedding.as_ptr() as *mut u8;
-                    let len = _embedding.len() * std::mem::size_of::<f32>();
+                include_str!("insert_embedding.sql"),
+                libsql::params![
+                    unsafe {
+                        let p = _embedding.as_ptr() as *mut u8;
+                        let len = _embedding.len() * std::mem::size_of::<f32>();
 
-                    std::slice::from_raw_parts(p, len)
-                },],
+                        std::slice::from_raw_parts(p, len)
+                    },
+                    text
+                ],
             )
             .await?;
 
