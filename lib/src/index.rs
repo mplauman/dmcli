@@ -13,8 +13,8 @@ use walkdir::{DirEntry, WalkDir};
 use crate::error::Error;
 use crate::result::Result;
 
-const MODEL_NAME: &'static str = "sentence-transformers/all-MiniLM-L6-v2";
-const MODEL_REVISION: &'static str = "refs/pr/21";
+const MODEL_NAME: &str = "sentence-transformers/all-MiniLM-L6-v2";
+const MODEL_REVISION: &str = "refs/pr/21";
 const MODEL_DIMS: usize = 384;
 
 #[derive(Debug, Clone)]
@@ -46,7 +46,7 @@ fn process_markdown<'a>(content: &'a str, path: &'a Path) -> Vec<ChunkPayload<'a
 
                     chunks.push(ChunkPayload {
                         content: normalized_content,
-                        path: path,
+                        path,
                         headers: header_stack.clone(),
                     });
                     current_text.clear();
@@ -96,7 +96,7 @@ fn process_markdown<'a>(content: &'a str, path: &'a Path) -> Vec<ChunkPayload<'a
         let normalized_content = trimmed.split_whitespace().collect::<Vec<&str>>().join(" ");
         chunks.push(ChunkPayload {
             content: normalized_content,
-            path: path,
+            path,
             headers: header_stack,
         });
     }
@@ -302,7 +302,6 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
                 .flat_map(|chunk| {
                     splitter
                         .chunks(&chunk.content)
-                        .into_iter()
                         .map(|subchunk| subchunk.trim().to_string())
                         .filter(|content| !content.is_empty())
                         .map(|subchunk| {

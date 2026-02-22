@@ -17,7 +17,7 @@ impl<const EMBEDDINGS_SIZE: usize> Database<EMBEDDINGS_SIZE> {
         let conn = db.connect()?;
 
         let init_sql = format!(include_str!("init.sql"), EMBEDDINGS_SIZE);
-        conn.execute(&init_sql, ()).await?;
+        conn.execute_batch(&init_sql).await?;
 
         Ok(Database { conn, file })
     }
@@ -53,23 +53,35 @@ impl<const EMBEDDINGS_SIZE: usize> Database<EMBEDDINGS_SIZE> {
 
     pub async fn insert_doc_chunk(
         &self,
-        _embedding: &[f32; EMBEDDINGS_SIZE],
-        _content: &str,
-        _path: &Path,
-        _hash: &str,
-        _section: &str,
+        embedding: &[f32; EMBEDDINGS_SIZE],
+        content: &str,
+        path: &Path,
+        hash: &str,
+        section: &str,
     ) -> Result<()> {
+        self.insert(embedding, content).await?;
+
+        let row_id = self.conn.last_insert_rowid();
+        println!("Inserted chunk with id {row_id}");
+
+        self.conn
+            .execute(
+                include_str!("insert_document_chunks.sql"),
+                libsql::params![row_id, path.to_string_lossy(), section, hash],
+            )
+            .await?;
+
         Ok(())
     }
 
-    pub async fn insert(&self, _embedding: &[f32; EMBEDDINGS_SIZE], text: &str) -> Result<()> {
+    pub async fn insert(&self, embedding: &[f32; EMBEDDINGS_SIZE], text: &str) -> Result<()> {
         self.conn
             .execute(
                 include_str!("insert_embedding.sql"),
                 libsql::params![
                     unsafe {
-                        let p = _embedding.as_ptr() as *mut u8;
-                        let len = _embedding.len() * std::mem::size_of::<f32>();
+                        let p = embedding.as_ptr() as *mut u8;
+                        let len = embedding.len() * std::mem::size_of::<f32>();
 
                         std::slice::from_raw_parts(p, len)
                     },
@@ -113,6 +125,20 @@ mod tests {
         let embeddings: [f32; 5] = [0.0, 0.0, 0.0, 0.0, 0.0];
 
         db.insert(&embeddings, "hello").await.unwrap();
+        let results = db.find_similar(&embeddings, 10).await.unwrap();
+
+        assert_eq!(results, vec!["hello".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn insert_doc_chunk() {
+        let db = Database::<5>::new().await.unwrap();
+        let embeddings: [f32; 5] = [0.0, 0.0, 0.0, 0.0, 0.0];
+
+        db.insert_doc_chunk(&embeddings, "hello", Path::new("foo.md"), "hash", "section")
+            .await
+            .unwrap();
+
         let results = db.find_similar(&embeddings, 10).await.unwrap();
 
         assert_eq!(results, vec!["hello".to_string()]);
