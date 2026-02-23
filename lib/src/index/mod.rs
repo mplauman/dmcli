@@ -24,6 +24,159 @@ struct ChunkPayload<'a> {
     pub headers: Vec<String>,
 }
 
+struct EmbeddingBuilder {
+    device: Device,
+    tokenizer: Tokenizer,
+    model: BertModel,
+}
+
+impl EmbeddingBuilder {
+    fn extract_keywords<'a>(&self, prompt: &str, top_k: usize) -> Result<Vec<(String, f32)>> {
+        // Pre-process candidates, filtering out stop words that don't mean much.
+        let stop_words = include_str!("stopwords.txt")
+            .split_whitespace()
+            .collect::<Vec<_>>();
+
+        let candidates: Vec<&str> = prompt
+            .split_whitespace()
+            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+            .filter(|w| !stop_words.contains(&w.to_lowercase().as_str()) && w.len() > 2)
+            .collect();
+
+        if candidates.is_empty() {
+            return Ok(vec![]);
+        }
+        if candidates.len() == 1 {
+            return Ok(vec![(candidates[0].to_string(), 1.0)]);
+        }
+
+        // 4. Get Global Intent (Single Vector)
+        //let global_vec = self.encode_new(prompt)?.embedding; // Shape: [HiddenSize]
+        let global_vec = self.encode(vec![prompt])?;
+        let global_vec = global_vec.pool_2()?;
+        let global_vec = global_vec.normalize()?;
+        let global_vec = global_vec.embedding;
+
+        let pooled_words = self.encode(candidates.clone())?;
+        let pooled_words = pooled_words.pool_2()?;
+        let pooled_words = pooled_words.normalize()?;
+        let pooled_words = pooled_words.embedding;
+
+        // Matrix multiplication: [N, HiddenSize] * [HiddenSize, 1] -> [N]
+        let similarities = pooled_words
+            .matmul(&global_vec.unsqueeze(1)?)?
+            .flatten_all()?;
+        let scores: Vec<f32> = similarities.to_vec1()?;
+
+        // 6. Map back to strings and sort
+        let mut results = candidates.into_iter().zip(scores).collect::<Vec<_>>();
+        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        results.dedup_by(|a, b| a.0 == b.0); // Remove duplicates
+
+        let results = results
+            .into_iter()
+            .take(top_k)
+            .map(|r| (r.0.to_string(), r.1))
+            .collect::<Vec<_>>();
+
+        Ok(results)
+    }
+
+    fn encode<'a, E>(&self, input: Vec<E>) -> Result<Embedding>
+    where
+        E: Into<EncodeInput<'a>> + Send,
+    {
+        let len = input.len();
+        println!("Encoding {len} inputs");
+
+        if len == 0 {
+            return Err(Error::Index("nothing to encode".to_string()));
+        }
+
+        let tokens = self
+            .tokenizer
+            .encode_batch(input, true)
+            .map_err(|e| Error::Index(format!("Failed to encode batch: {e:?}")))?;
+
+        let token_ids = tokens
+            .iter()
+            .map(|tokens| {
+                let tokens = tokens.get_ids().to_vec();
+                Ok(Tensor::new(tokens.as_slice(), &self.device)?)
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let attention_mask = tokens
+            .iter()
+            .map(|tokens| {
+                let tokens = tokens.get_attention_mask().to_vec();
+                Ok(Tensor::new(tokens.as_slice(), &self.device)?)
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let token_ids = Tensor::stack(&token_ids, 0)?;
+        let attention_mask = Tensor::stack(&attention_mask, 0)?;
+        let token_type_ids = token_ids.zeros_like()?;
+
+        let embeddings = self
+            .model
+            .forward(&token_ids, &token_type_ids, Some(&attention_mask))?;
+
+        Ok(Embedding {
+            embedding: embeddings,
+            attention_mask,
+        })
+    }
+}
+
+struct Embedding {
+    embedding: Tensor,
+    attention_mask: Tensor,
+}
+
+impl Embedding {
+    fn normalize(self) -> Result<Self> {
+        let norm = self
+            .embedding
+            .sqr()?
+            .sum_keepdim(self.embedding.rank() - 1)?
+            .sqrt()?;
+        let embedding = self.embedding.broadcast_div(&norm)?;
+
+        Ok(Self {
+            embedding,
+            attention_mask: self.attention_mask,
+        })
+    }
+
+    // Apply avg-pooling by taking the mean embedding value for all
+    // tokens (after applying the attention mask from tokenization).
+    // This should produce the same numeric result as the
+    // `sentence_transformers` Python library.
+    fn pool_1(self) -> Result<Embedding> {
+        let attention_mask_for_pooling = self.attention_mask.to_dtype(DTYPE)?.unsqueeze(2)?;
+        let sum_mask = attention_mask_for_pooling.sum(1)?;
+        let embeddings = (self.embedding.broadcast_mul(&attention_mask_for_pooling)?).sum(1)?;
+        let embeddings = embeddings.broadcast_div(&sum_mask)?;
+
+        Ok(Embedding {
+            embedding: embeddings,
+            attention_mask: self.attention_mask,
+        })
+    }
+
+    // Mean pooling to get a single vector for the text
+    fn pool_2(self) -> Result<Embedding> {
+        let (_, s, _) = self.embedding.dims3()?;
+        let embedding = (self.embedding.sum(1)? / (s as f64))?.squeeze(0)?; // Shape: [N, HiddenSize]
+
+        Ok(Embedding {
+            embedding,
+            attention_mask: self.attention_mask,
+        })
+    }
+}
+
 fn process_markdown<'a>(content: &'a str, path: &'a Path) -> Vec<ChunkPayload<'a>> {
     let options = pulldown_cmark::Options::ENABLE_TABLES;
     let parser = Parser::new_ext(content, options);
@@ -106,9 +259,7 @@ fn process_markdown<'a>(content: &'a str, path: &'a Path) -> Vec<ChunkPayload<'a
 
 pub struct DocumentIndex<const CHUNK_SIZE: usize> {
     db: crate::database::Database<MODEL_DIMS>,
-    device: Device,
-    tokenizer: Tokenizer,
-    model: BertModel,
+    embedding_builder: EmbeddingBuilder,
 }
 
 impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
@@ -153,9 +304,11 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
 
         let result = Self {
             db: crate::database::Database::<MODEL_DIMS>::new().await?,
-            device,
-            tokenizer,
-            model,
+            embedding_builder: EmbeddingBuilder {
+                device,
+                tokenizer,
+                model,
+            },
         };
 
         Ok(result)
@@ -163,7 +316,7 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
 
     fn split_text<'a>(&self, text: &'a str) -> Result<Vec<&'a str>> {
         let chunk_config = ChunkConfig::new(CHUNK_SIZE)
-            .with_sizer(&self.tokenizer)
+            .with_sizer(&self.embedding_builder.tokenizer)
             .with_overlap(CHUNK_SIZE / 64)
             .expect("Overlap is a sane value");
 
@@ -184,47 +337,10 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
             return Ok(vec![]);
         }
 
-        let tokens = self
-            .tokenizer
-            .encode_batch(input, true)
-            .map_err(|e| Error::Index(format!("Failed to encode batch: {e:?}")))?;
-
-        let token_ids = tokens
-            .iter()
-            .map(|tokens| {
-                let tokens = tokens.get_ids().to_vec();
-                Ok(Tensor::new(tokens.as_slice(), &self.device)?)
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        let attention_mask = tokens
-            .iter()
-            .map(|tokens| {
-                let tokens = tokens.get_attention_mask().to_vec();
-                Ok(Tensor::new(tokens.as_slice(), &self.device)?)
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        let token_ids = Tensor::stack(&token_ids, 0)?;
-        let attention_mask = Tensor::stack(&attention_mask, 0)?;
-        let token_type_ids = token_ids.zeros_like()?;
-
-        let embeddings = self
-            .model
-            .forward(&token_ids, &token_type_ids, Some(&attention_mask))?;
-
-        let embeddings = {
-            // Apply avg-pooling by taking the mean embedding value for all
-            // tokens (after applying the attention mask from tokenization).
-            // This should produce the same numeric result as the
-            // `sentence_transformers` Python library.
-            let attention_mask_for_pooling = attention_mask.to_dtype(DTYPE)?.unsqueeze(2)?;
-            let sum_mask = attention_mask_for_pooling.sum(1)?;
-            let embeddings = (embeddings.broadcast_mul(&attention_mask_for_pooling)?).sum(1)?;
-            embeddings.broadcast_div(&sum_mask)?
-        };
-
-        let embeddings = DocumentIndex::<CHUNK_SIZE>::normalize_l2(&embeddings)?;
+        let embedding = self.embedding_builder.encode(input)?;
+        let embedding = embedding.pool_1()?;
+        let embedding = embedding.normalize()?;
+        let embeddings = embedding.embedding;
 
         let mut result: Vec<[f32; MODEL_DIMS]> = Vec::new();
         for i in 0..len {
@@ -232,18 +348,13 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
                 embeddings
                     .get(i)
                     .unwrap()
-                    .to_vec1::<f32>()
-                    .unwrap()
+                    .to_vec1::<f32>()?
                     .try_into()
                     .unwrap(),
             );
         }
 
         Ok(result)
-    }
-
-    fn normalize_l2(v: &Tensor) -> Result<Tensor> {
-        Ok(v.broadcast_div(&v.sqr()?.sum_keepdim(1)?.sqrt()?)?)
     }
 
     async fn insert(&mut self, texts: Vec<&str>) -> Result<()> {
@@ -257,6 +368,10 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
     }
 
     pub async fn search<const MAX_RESULTS: u64>(&self, text: &str) -> Result<Vec<String>> {
+        let top_k: usize = 6;
+        let results = self.embedding_builder.extract_keywords(text, top_k)?;
+        println!("Keywords from input {text}: {results:?}");
+
         let chunks = self.split_text(text)?;
 
         let encodings = self.encode(chunks)?;
@@ -272,7 +387,7 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
 
     pub async fn index_path(&mut self, path: impl AsRef<Path>) -> Result<()> {
         let chunk_config = ChunkConfig::new(CHUNK_SIZE)
-            .with_sizer(&self.tokenizer)
+            .with_sizer(&self.embedding_builder.tokenizer)
             .with_overlap(CHUNK_SIZE / 64)
             .expect("Overlap is a sane value");
 
@@ -349,9 +464,21 @@ mod tests {
     async fn simple_search() {
         let index = DocumentIndex::<5>::new().await.unwrap();
 
-        let results = index.search::<10>("Hello, world!").await.unwrap();
+        let sentences = vec![
+            "what were the derro doing beneath mog caern in the previous session?",
+            "who is naal?",
+            "who are naal's friends?",
+            "what are the names of the various NPCs in mog caern",
+            "who is naal and who are his friends?",
+            "what were the derro doing beneath mog caern in the previous adventure?",
+            "Hello, world!",
+        ];
 
-        assert!(results.is_empty());
+        for sentence in sentences {
+            let results = index.search::<10>(sentence).await.unwrap();
+
+            assert!(results.is_empty());
+        }
     }
 
     #[tokio::test]

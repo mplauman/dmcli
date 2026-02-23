@@ -51,12 +51,5 @@ fn main() -> Result<()> {
             .for_each(|r| println!("{r}")),
     };
 
-    let results = rt.block_on(index.search::<32>("what were the derro doing?"))?;
-    for result in results {
-        println!("{result}");
-        println!("");
-        println!("==============================");
-    }
-
     Ok(())
 }
