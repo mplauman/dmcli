@@ -31,17 +31,32 @@ struct EmbeddingBuilder {
 }
 
 impl EmbeddingBuilder {
-    fn extract_keywords<'a>(&self, prompt: &str, top_k: usize) -> Result<Vec<(String, f32)>> {
+    fn extract_keywords<'a>(
+        &self,
+        prompt: &str,
+        max_n: usize,
+        top_k: usize,
+        threshold: f32,
+    ) -> Result<Vec<(String, f32)>> {
         // Pre-process candidates, filtering out stop words that don't mean much.
         let stop_words = include_str!("stopwords.txt")
             .split_whitespace()
             .collect::<Vec<_>>();
 
-        let candidates: Vec<&str> = prompt
+        let words: Vec<&str> = prompt
             .split_whitespace()
             .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
             .filter(|w| !stop_words.contains(&w.to_lowercase().as_str()) && w.len() > 2)
             .collect();
+
+        let mut candidates = Vec::new();
+        for n in 1..=max_n {
+            for window in words.windows(n) {
+                // Join the window into a single string (e.g., "docker", "docker backup")
+                let ngram = window.join(" ");
+                candidates.push(ngram);
+            }
+        }
 
         if candidates.is_empty() {
             return Ok(vec![]);
@@ -75,11 +90,28 @@ impl EmbeddingBuilder {
 
         let results = results
             .into_iter()
-            .take(top_k)
-            .map(|r| (r.0.to_string(), r.1))
+            .filter(|r| r.1 >= threshold)
             .collect::<Vec<_>>();
 
-        Ok(results)
+        // 1. We assume 'results' is already sorted by score descending
+        let mut final_keywords: Vec<(String, f32)> = Vec::new();
+
+        for (phrase, score) in results {
+            // Check if this phrase is already "covered" by a better-scoring phrase
+            let is_redundant = final_keywords.iter().any(|(existing_phrase, _)| {
+                existing_phrase.contains(&phrase) || phrase.contains(existing_phrase)
+            });
+
+            if !is_redundant {
+                final_keywords.push((phrase, score));
+            }
+
+            if final_keywords.len() >= top_k {
+                break;
+            }
+        }
+
+        Ok(final_keywords)
     }
 
     fn encode<'a, E>(&self, input: Vec<E>) -> Result<Embedding>
@@ -368,8 +400,12 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
     }
 
     pub async fn search<const MAX_RESULTS: u64>(&self, text: &str) -> Result<Vec<String>> {
+        let max_n: usize = 3;
         let top_k: usize = 6;
-        let results = self.embedding_builder.extract_keywords(text, top_k)?;
+        let threshold: f32 = 0.45;
+        let results = self
+            .embedding_builder
+            .extract_keywords(text, max_n, top_k, threshold)?;
         println!("Keywords from input {text}: {results:?}");
 
         let chunks = self.split_text(text)?;
@@ -472,6 +508,7 @@ mod tests {
             "who is naal and who are his friends?",
             "what were the derro doing beneath mog caern in the previous adventure?",
             "Hello, world!",
+            "Act as a DevOps expert and create a GitHub Action to deploy to AWS Lambda.",
         ];
 
         for sentence in sentences {
