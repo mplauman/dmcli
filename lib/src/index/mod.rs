@@ -43,11 +43,13 @@ impl EmbeddingBuilder {
             .split_whitespace()
             .collect::<Vec<_>>();
 
-        let words: Vec<&str> = prompt
+        let words = prompt
+            .to_lowercase()
             .split_whitespace()
             .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
-            .filter(|w| !stop_words.contains(&w.to_lowercase().as_str()) && w.len() > 2)
-            .collect();
+            .filter(|w| !stop_words.contains(w) && w.len() > 2)
+            .map(|w| w.to_string())
+            .collect::<Vec<_>>();
 
         let mut candidates = Vec::new();
         for n in 1..=max_n {
@@ -62,7 +64,8 @@ impl EmbeddingBuilder {
             return Ok(vec![]);
         }
         if candidates.len() == 1 {
-            return Ok(vec![(candidates[0].to_string(), 1.0)]);
+            candidates.resize(1, String::default());
+            return Ok(vec![(candidates.pop().unwrap(), 1.0)]);
         }
 
         // 4. Get Global Intent (Single Vector)
