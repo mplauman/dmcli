@@ -16,6 +16,8 @@ use crate::result::Result;
 const MODEL_NAME: &str = "sentence-transformers/all-MiniLM-L6-v2";
 const MODEL_REVISION: &str = "refs/pr/21";
 const MODEL_DIMS: usize = 384;
+const CHUNK_SIZE: usize = 256;
+const OVERLAP: usize = 50;
 
 #[derive(Debug, Clone)]
 struct ChunkPayload<'a> {
@@ -292,12 +294,12 @@ fn process_markdown<'a>(content: &'a str, path: &'a Path) -> Vec<ChunkPayload<'a
     chunks
 }
 
-pub struct DocumentIndex<const CHUNK_SIZE: usize> {
+pub struct DocumentIndex {
     db: crate::database::Database<MODEL_DIMS>,
     embedding_builder: EmbeddingBuilder,
 }
 
-impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
+impl DocumentIndex {
     /// Create a new [`DocumentIndex`], optionally backed by a database at the
     /// given path. If `db_path` is `None`, a temporary database file is used
     /// and deleted on drop.
@@ -435,7 +437,7 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
     pub async fn index_path(&mut self, path: impl AsRef<Path>) -> Result<()> {
         let chunk_config = ChunkConfig::new(CHUNK_SIZE)
             .with_sizer(&self.embedding_builder.tokenizer)
-            .with_overlap(CHUNK_SIZE / 64)
+            .with_overlap(OVERLAP)
             .expect("Overlap is a sane value");
 
         let splitter = MarkdownSplitter::new(chunk_config);
@@ -509,7 +511,7 @@ mod tests {
 
     #[tokio::test]
     async fn simple_search() {
-        let index = DocumentIndex::<5>::new(None).await.unwrap();
+        let index = DocumentIndex::new(None).await.unwrap();
 
         let sentences = vec![
             "what were the derro doing beneath mog caern in the previous session?",
@@ -531,7 +533,7 @@ mod tests {
 
     #[tokio::test]
     async fn encode_sentences() {
-        let mut index = DocumentIndex::<30>::new(None).await.unwrap();
+        let mut index = DocumentIndex::new(None).await.unwrap();
 
         let sentences = vec![
             "The cat sits outside",

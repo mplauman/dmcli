@@ -33,7 +33,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let rt = tokio::runtime::Runtime::new()?;
-    let mut index = rt.block_on(index::DocumentIndex::<384>::new(cli.database))?;
+    let mut index = rt.block_on(index::DocumentIndex::new(cli.database))?;
 
     match &cli.command {
         Command::Roll { expr } => match dice::roll(&expr.join(" "))? {
