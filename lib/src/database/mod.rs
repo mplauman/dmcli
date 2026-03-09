@@ -1,3 +1,7 @@
+mod search_result;
+
+pub use search_result::{SearchResult, Source};
+
 use crate::Result;
 use libsql::{Builder, Connection};
 use std::path::{Path, PathBuf};
@@ -51,11 +55,14 @@ impl<const EMBEDDINGS_SIZE: usize> Database<EMBEDDINGS_SIZE> {
         Ok(Database { conn, file })
     }
 
+    /// Search for embeddings similar to the given vector, returning up to
+    /// `max_results` [`SearchResult`] entries. When an embedding has multiple
+    /// associated document chunks, each chunk produces its own entry.
     pub async fn find_similar(
         &self,
         embeddings: &[f32; EMBEDDINGS_SIZE],
         max_results: u64,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<SearchResult>> {
         let mut rows = self
             .conn
             .query(
@@ -74,7 +81,31 @@ impl<const EMBEDDINGS_SIZE: usize> Database<EMBEDDINGS_SIZE> {
 
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
-            results.push(row.get_str(0)?.to_string());
+            // Column 0: distance from vector_distance_cos (0.0 = identical).
+            // Convert to a score where 1.0 is a perfect match.
+            // Falls back to 0.0 (worst score) when the column is NULL.
+            let distance = match row.get_value(0)? {
+                libsql::Value::Real(v) => v as f32,
+                libsql::Value::Integer(v) => v as f32,
+                _ => 1.0,
+            };
+            let score = 1.0 - distance;
+            // Column 1: text_chunk
+            let text = row.get_str(1)?.to_string();
+            // Columns 2 & 3: file_name / section — NULL when no document_chunk exists
+            let source = match (row.get_str(2), row.get_str(3)) {
+                (Ok(path), Ok(section)) => Some(Source::File {
+                    path: PathBuf::from(path),
+                    section: section.to_string(),
+                }),
+                _ => None,
+            };
+
+            results.push(SearchResult {
+                score,
+                text,
+                source,
+            });
         }
 
         Ok(results)
@@ -169,7 +200,9 @@ mod tests {
         db.insert(&embeddings, "hello").await.unwrap();
         let results = db.find_similar(&embeddings, 10).await.unwrap();
 
-        assert_eq!(results, vec!["hello".to_string()]);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].text, "hello");
+        assert!(results[0].source.is_none());
     }
 
     #[tokio::test]
@@ -183,6 +216,57 @@ mod tests {
 
         let results = db.find_similar(&embeddings, 10).await.unwrap();
 
-        assert_eq!(results, vec!["hello".to_string()]);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].text, "hello");
+        assert_eq!(
+            results[0].source,
+            Some(Source::File {
+                path: PathBuf::from("foo.md"),
+                section: "section".to_string(),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn insert_doc_chunk_multiple_chunks_same_embedding() {
+        let db = Database::<5>::new().await.unwrap();
+        let embeddings: [f32; 5] = [0.0, 0.0, 0.0, 0.0, 0.0];
+
+        // Insert one embedding then associate two document chunks with it.
+        db.insert(&embeddings, "shared text").await.unwrap();
+        let row_id = db.conn.last_insert_rowid();
+        db.conn
+            .execute(
+                include_str!("insert_document_chunks.sql"),
+                libsql::params![row_id, "a.md", "intro", "hash1"],
+            )
+            .await
+            .unwrap();
+        db.conn
+            .execute(
+                include_str!("insert_document_chunks.sql"),
+                libsql::params![row_id, "b.md", "appendix", "hash2"],
+            )
+            .await
+            .unwrap();
+
+        let results = db.find_similar(&embeddings, 10).await.unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.text == "shared text"));
+
+        let sources: Vec<_> = results.iter().map(|r| r.source.as_ref().unwrap()).collect();
+        assert!(
+            sources
+                .iter()
+                .any(|s| matches!(s, Source::File { path, section }
+            if path == &PathBuf::from("a.md") && section == "intro"))
+        );
+        assert!(
+            sources
+                .iter()
+                .any(|s| matches!(s, Source::File { path, section }
+            if path == &PathBuf::from("b.md") && section == "appendix"))
+        );
     }
 }

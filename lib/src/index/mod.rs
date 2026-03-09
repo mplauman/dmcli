@@ -10,6 +10,7 @@ use text_splitter::{ChunkConfig, MarkdownSplitter, TextSplitter};
 use tokenizers::{EncodeInput, PaddingParams, Tokenizer};
 use walkdir::{DirEntry, WalkDir};
 
+use crate::database::SearchResult;
 use crate::error::Error;
 use crate::result::Result;
 
@@ -412,7 +413,7 @@ impl DocumentIndex {
         Ok(())
     }
 
-    pub async fn search<const MAX_RESULTS: u64>(&self, text: &str) -> Result<Vec<String>> {
+    pub async fn search<const MAX_RESULTS: u64>(&self, text: &str) -> Result<Vec<SearchResult>> {
         let max_n: usize = 3;
         let top_k: usize = 6;
         let threshold: f32 = 0.45;
