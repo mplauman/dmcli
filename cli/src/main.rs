@@ -13,6 +13,11 @@ struct Cli {
     #[arg(short, long, global = true)]
     database: Option<PathBuf>,
 
+    /// URL of the Qdrant instance to use for vector search (e.g. http://localhost:6334).
+    /// When not provided, only the local database is used.
+    #[arg(short, long, global = true)]
+    qdrant_url: Option<String>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -33,7 +38,10 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let rt = tokio::runtime::Runtime::new()?;
-    let mut index = rt.block_on(index::DocumentIndex::new(cli.database))?;
+    let mut index = rt.block_on(index::DocumentIndex::new(
+        cli.database,
+        cli.qdrant_url.as_deref(),
+    ))?;
 
     match &cli.command {
         Command::Roll { expr } => match dice::roll(&expr.join(" "))? {
