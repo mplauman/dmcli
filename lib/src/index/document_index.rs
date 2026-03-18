@@ -173,10 +173,14 @@ impl DocumentIndex {
         let walker = WalkDir::new(path)
             .into_iter()
             .filter_entry(|e| {
-                !e.file_name()
-                    .to_str()
-                    .map(|name| name.starts_with('.'))
-                    .unwrap_or(false)
+                // Always descend into the root (depth 0); only skip hidden
+                // entries (names starting with '.') inside it.
+                e.depth() == 0
+                    || !e
+                        .file_name()
+                        .to_str()
+                        .map(|name| name.starts_with('.'))
+                        .unwrap_or(false)
             })
             .filter_map(|e| e.map(DirEntry::into_path).ok())
             .filter(|e| e.is_file())
