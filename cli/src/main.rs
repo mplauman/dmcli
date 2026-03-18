@@ -1,7 +1,6 @@
 use clap::{Parser, Subcommand};
 use lib::{dice, index};
 use result::Result;
-use std::path::PathBuf;
 
 mod result;
 
@@ -9,10 +8,6 @@ mod result;
 #[command(version, about, long_about = None)]
 #[command(propagate_version = true)]
 struct Cli {
-    /// Path to the database file. If not provided, a temporary file is used.
-    #[arg(short, long, global = true)]
-    database: Option<PathBuf>,
-
     /// URL of the Qdrant instance to use for vector search (e.g. http://localhost:6334).
     /// When not provided, only the local database is used.
     #[arg(short, long, global = true)]
@@ -31,17 +26,17 @@ enum Command {
     Index { path: String },
 
     /// Run a search against the RAG database for a block of text
-    Search { text: Vec<String> },
+    Search {
+        text: Vec<String>,
+        max_results: Option<u64>,
+    },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let rt = tokio::runtime::Runtime::new()?;
-    let mut index = rt.block_on(index::DocumentIndex::new(
-        cli.database,
-        cli.qdrant_url.as_deref(),
-    ))?;
+    let mut index = rt.block_on(index::DocumentIndex::new(cli.qdrant_url.as_deref()))?;
 
     match &cli.command {
         Command::Roll { expr } => match dice::roll(&expr.join(" "))? {
@@ -58,8 +53,8 @@ fn main() -> Result<()> {
             Ok(_) => println!("Finished indexing {path}"),
             Err(e) => println!("Indexing failed: {:?}", e),
         },
-        Command::Search { text } => rt
-            .block_on(index.search::<7>(&text.join(" ")))?
+        Command::Search { text, max_results } => rt
+            .block_on(index.search(&text.join(" "), max_results.unwrap_or(7)))?
             .into_iter()
             .for_each(|r| println!("{r}\n\n")),
     };

@@ -14,9 +14,6 @@ candle-transformers = { workspace = true, features = [
 hex = { workspace = true, features = ["alloc"] }
 hf-hub = { workspace = true, features = [
 ] }
-libsql = { workspace = true, features = [
-  "core",
-] }
 pulldown-cmark = { workspace = true, features = [] }
 qdrant-client = { workspace = true, features = [] }
 serde_json = { workspace = true, features = [

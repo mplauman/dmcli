@@ -2032,7 +2032,6 @@ dependencies = [
  "candle-transformers",
  "hex",
  "hf-hub",
- "libsql",
  "pulldown-cmark",
  "qdrant-client",
  "serde_json",

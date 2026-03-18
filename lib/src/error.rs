@@ -28,12 +28,6 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<libsql::Error> for Error {
-    fn from(err: libsql::Error) -> Self {
-        Error::SQL(format!("{err}"))
-    }
-}
-
 impl From<hf_hub::api::sync::ApiError> for Error {
     fn from(err: hf_hub::api::sync::ApiError) -> Self {
         Error::ModelDownload(err.to_string())
