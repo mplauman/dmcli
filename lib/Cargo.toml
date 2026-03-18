@@ -5,6 +5,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+async-trait = { workspace = true }
 caith = { workspace = true }
 candle-core = { workspace = true, features = [
 ] }

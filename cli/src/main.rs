@@ -1,5 +1,8 @@
 use clap::{Parser, Subcommand};
-use lib::{dice, index};
+use lib::{
+    dice, index,
+    index::{NoopStore, QdrantStore},
+};
 use result::Result;
 
 mod result;
@@ -36,7 +39,11 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let rt = tokio::runtime::Runtime::new()?;
-    let mut index = rt.block_on(index::DocumentIndex::new(cli.qdrant_url.as_deref()))?;
+    let store: Box<dyn index::VectorStore> = match cli.qdrant_url.as_deref() {
+        Some(url) => Box::new(QdrantStore::new(url)),
+        None => Box::new(NoopStore),
+    };
+    let index = rt.block_on(index::DocumentIndex::new(store))?;
 
     match &cli.command {
         Command::Roll { expr } => match dice::roll(&expr.join(" "))? {
@@ -49,7 +56,7 @@ fn main() -> Result<()> {
                 reason.map(|r| format!(" ({r})")).unwrap_or_default()
             ),
         },
-        Command::Index { path } => match rt.block_on(index.index_path(&path)) {
+        Command::Index { path } => match rt.block_on(index.index_path(path)) {
             Ok(_) => println!("Finished indexing {path}"),
             Err(e) => println!("Indexing failed: {:?}", e),
         },

@@ -13,29 +13,26 @@ use walkdir::{DirEntry, WalkDir};
 use crate::error::Error;
 use crate::index::embedding::EmbeddingBuilder;
 use crate::index::markdown::process_markdown;
-use crate::index::search_result::{SearchResult, Source};
+use crate::index::search_result::SearchResult;
+use crate::index::vector_store::{Chunk, VectorStore};
 use crate::result::Result;
 
 const MODEL_NAME: &str = "sentence-transformers/all-MiniLM-L6-v2";
 const MODEL_REVISION: &str = "refs/pr/21";
-const MODEL_DIMS: usize = 384;
 const CHUNK_SIZE: usize = 256;
 const OVERLAP: usize = 50;
-const COLLECTION: &str = "dmcli_chunks";
 
+/// Drives document chunking, embedding, and retrieval against a [`VectorStore`].
 pub struct DocumentIndex {
     embedding_builder: EmbeddingBuilder,
-    /// URL of the Qdrant instance. When `None`, search and indexing fall back
-    /// to the local SQLite vector database.
-    qdrant_url: Option<String>,
+    store: Box<dyn VectorStore>,
 }
 
 impl DocumentIndex {
-    /// Create a new [`DocumentIndex`], optionally backed by a persistent
-    /// database at `db_path`. When `qdrant_url` is supplied the instance uses
-    /// Qdrant for both indexing and hybrid retrieval; otherwise it falls back
-    /// to the local SQLite cosine-similarity search.
-    pub async fn new(qdrant_url: Option<&str>) -> Result<Self> {
+    /// Create a new [`DocumentIndex`] backed by the given [`VectorStore`].
+    ///
+    /// Downloads the BERT model weights on first use (cached by `hf-hub`).
+    pub async fn new(store: Box<dyn VectorStore>) -> Result<Self> {
         let device = Device::Cpu;
 
         let repo = Repo::with_revision(
@@ -77,7 +74,7 @@ impl DocumentIndex {
                 tokenizer,
                 model,
             },
-            qdrant_url: qdrant_url.map(str::to_owned),
+            store,
         })
     }
 
@@ -91,115 +88,30 @@ impl DocumentIndex {
         Ok(splitter.chunks(text).collect())
     }
 
-    // -------------------------------------------------------------------------
-    // Qdrant helpers
-    // -------------------------------------------------------------------------
-
-    /// Connect to Qdrant and ensure the `dmcli_chunks` collection exists with
-    /// the correct named-vector schema:
-    ///
-    /// - `"dense"` — 384-dim Cosine HNSW vectors
-    /// - `"sparse"` — sparse vectors (log-TF token weights)
-    async fn qdrant_client(&self, url: &str) -> Result<qdrant_client::Qdrant> {
-        use qdrant_client::{
-            Qdrant,
-            qdrant::{
-                CreateCollectionBuilder, Distance, SparseVectorConfig, SparseVectorParams,
-                VectorParamsBuilder, VectorParamsMap, VectorsConfig, vectors_config,
-            },
-        };
-
-        let client = Qdrant::from_url(url)
-            .build()
-            .map_err(|e| Error::Index(format!("Failed to connect to Qdrant at {url}: {e}")))?;
-
-        if !client
-            .collection_exists(COLLECTION)
-            .await
-            .map_err(|e| Error::Index(format!("Qdrant collection_exists failed: {e}")))?
-        {
-            // Named dense vectors.
-            let dense_params =
-                VectorParamsBuilder::new(MODEL_DIMS as u64, Distance::Cosine).build();
-            let vectors_config = VectorsConfig {
-                config: Some(vectors_config::Config::ParamsMap(VectorParamsMap {
-                    map: [("dense".to_string(), dense_params)].into(),
-                })),
-            };
-
-            // Named sparse vectors.
-            let sparse_config = SparseVectorConfig {
-                map: [("sparse".to_string(), SparseVectorParams::default())].into(),
-            };
-
-            client
-                .create_collection(
-                    CreateCollectionBuilder::new(COLLECTION)
-                        .vectors_config(vectors_config)
-                        .sparse_vectors_config(sparse_config),
-                )
-                .await
-                .map_err(|e| Error::Index(format!("Failed to create collection: {e}")))?;
+    /// Embed `text_chunks` and return them as [`Chunk`]s ready for the store.
+    fn embed_chunks(&self, text_chunks: &[(&str, PathBuf, String, String)]) -> Result<Vec<Chunk>> {
+        if text_chunks.is_empty() {
+            return Ok(vec![]);
         }
 
-        Ok(client)
-    }
-
-    /// Upsert a batch of chunks into Qdrant. Each point carries:
-    /// - `"dense"` vector (pooled + normalised BERT embedding)
-    /// - `"sparse"` vector (log-TF token weights)
-    /// - payload: `content`, `path`, `section`, `hash`
-    async fn qdrant_upsert(
-        &self,
-        url: &str,
-        chunks: &[(&str, PathBuf, String, String)],
-    ) -> Result<()> {
-        use qdrant_client::qdrant::{PointStruct, UpsertPointsBuilder, Vector};
-
-        if chunks.is_empty() {
-            return Ok(());
-        }
-
-        let client = self.qdrant_client(url).await?;
-
-        let texts: Vec<&str> = chunks.iter().map(|(t, ..)| *t).collect();
+        let texts: Vec<&str> = text_chunks.iter().map(|(t, ..)| *t).collect();
         let dense_vecs = self.embedding_builder.encode_dense(texts)?;
 
-        let mut points: Vec<PointStruct> = Vec::with_capacity(chunks.len());
-        for (i, (text, path, hash, section)) in chunks.iter().enumerate() {
+        let mut chunks = Vec::with_capacity(text_chunks.len());
+        for (i, (text, path, hash, section)) in text_chunks.iter().enumerate() {
             let (sparse_indices, sparse_values) = self.embedding_builder.sparse_vector(text)?;
-
-            let mut vectors: HashMap<String, Vector> = HashMap::new();
-            vectors.insert("dense".to_string(), dense_vecs[i].to_vec().into());
-            if !sparse_indices.is_empty() {
-                vectors.insert(
-                    "sparse".to_string(),
-                    Vector::new_sparse(sparse_indices, sparse_values),
-                );
-            }
-
-            let mut payload = qdrant_client::Payload::new();
-            payload.insert("content", text.to_string());
-            payload.insert("path", path.to_string_lossy().as_ref());
-            payload.insert("section", section.as_str());
-            payload.insert("hash", hash.as_str());
-
-            // Derive a deterministic u64 point ID from the content hash.
-            let id = u64::from_be_bytes(
-                Sha256::digest(hash.as_bytes())[..8]
-                    .try_into()
-                    .expect("slice is 8 bytes"),
-            );
-
-            points.push(PointStruct::new(id, vectors, payload));
+            chunks.push(Chunk {
+                text: text.to_string(),
+                path: path.clone(),
+                hash: hash.clone(),
+                section: section.clone(),
+                dense: dense_vecs[i].clone(),
+                sparse_indices,
+                sparse_values,
+            });
         }
 
-        client
-            .upsert_points(UpsertPointsBuilder::new(COLLECTION, points).wait(true))
-            .await
-            .map_err(|e| Error::Index(format!("Qdrant upsert failed: {e}")))?;
-
-        Ok(())
+        Ok(chunks)
     }
 
     // -------------------------------------------------------------------------
@@ -208,30 +120,14 @@ impl DocumentIndex {
 
     /// Search for documents relevant to `text`.
     ///
-    /// When a Qdrant URL is configured, executes a hybrid query:
-    /// - **Dense prefetch**: top-`2×MAX_RESULTS` nearest neighbours by BERT embedding
-    /// - **Sparse prefetch**: top-`2×MAX_RESULTS` by log-TF keyword weights derived
+    /// Executes a hybrid query against the configured store:
+    /// - **Dense**: top-`2×max_results` nearest neighbours by BERT embedding
+    /// - **Sparse**: top-`2×max_results` by log-TF keyword weights derived
     ///   from the semantically salient keywords in the query
     ///
-    /// Both candidate sets are fused with Reciprocal Rank Fusion (RRF).
-    /// Falls back to local SQLite cosine-similarity search when no URL is set.
+    /// Both candidate sets are fused with Reciprocal Rank Fusion (RRF) when
+    /// the store supports it.
     pub async fn search(&self, text: &str, max_results: u64) -> Result<Vec<SearchResult>> {
-        let Some(url) = &self.qdrant_url else {
-            return Ok(vec![]);
-        };
-
-        use qdrant_client::qdrant::{
-            PrefetchQueryBuilder, Query, QueryPointsBuilder, RrfBuilder, SearchParamsBuilder,
-            VectorInput,
-        };
-
-        let prefetch_limit: u64 = max_results * 2;
-        // RRF scores rank 1 at ~0.016 (1/(k+1), k=60). 0.010 filters results
-        // that ranked poorly in both lists. For pure dense, 0.5 is a
-        // reasonable cosine similarity floor for "meaningfully related".
-        const RRF_SCORE_THRESHOLD: f32 = 0.010;
-        const DENSE_SCORE_THRESHOLD: f32 = 0.50;
-
         // Dense query vector.
         let query_chunk = self
             .split_text(text)?
@@ -239,18 +135,17 @@ impl DocumentIndex {
             .next()
             .map(|s| s.to_string())
             .unwrap_or_else(|| text.to_string());
+
         let dense_vec: Vec<f32> = self
             .embedding_builder
             .encode_dense(vec![query_chunk.as_str()])?
             .into_iter()
             .next()
-            .map(|a| a.to_vec())
             .unwrap_or_default();
 
         // Sparse query vector: extract keywords from the query and map each to
         // token IDs, accumulating scores across phrases.
         let keywords = self.embedding_builder.extract_keywords(text, 3, 6, 0.45)?;
-        println!("Keywords: {keywords:?}");
 
         let mut sparse_map: HashMap<u32, f32> = HashMap::new();
         for (phrase, score) in &keywords {
@@ -262,87 +157,13 @@ impl DocumentIndex {
         }
         let (sparse_indices, sparse_values): (Vec<u32>, Vec<f32>) = sparse_map.into_iter().unzip();
 
-        let client = self.qdrant_client(&url).await?;
-
-        let dense_prefetch = PrefetchQueryBuilder::default()
-            .query(Query::new_nearest(VectorInput::new_dense(dense_vec)))
-            .using("dense")
-            .limit(prefetch_limit)
-            .params(SearchParamsBuilder::default().hnsw_ef(128).exact(false));
-
-        let mut query_builder = QueryPointsBuilder::new(COLLECTION)
-            .add_prefetch(dense_prefetch)
-            .with_payload(true)
-            .limit(max_results);
-
-        if !sparse_indices.is_empty() {
-            let sparse_prefetch = PrefetchQueryBuilder::default()
-                .query(Query::new_nearest(VectorInput::new_sparse(
-                    sparse_indices,
-                    sparse_values,
-                )))
-                .using("sparse")
-                .limit(prefetch_limit);
-
-            query_builder = query_builder
-                .add_prefetch(sparse_prefetch)
-                .query(Query::new_rrf(RrfBuilder::new().weights(vec![1.0, 1.0])))
-                .score_threshold(RRF_SCORE_THRESHOLD);
-        } else {
-            // No usable keywords — pure dense.
-            query_builder = query_builder
-                .query(Query::new_nearest(VectorInput::new_dense(
-                    self.embedding_builder
-                        .encode_dense(vec![query_chunk.as_str()])?
-                        .into_iter()
-                        .next()
-                        .unwrap_or_default(),
-                )))
-                .using("dense")
-                .score_threshold(DENSE_SCORE_THRESHOLD);
-        }
-
-        let response = client
-            .query(query_builder.build())
+        self.store
+            .search(dense_vec, sparse_indices, sparse_values, max_results)
             .await
-            .map_err(|e| Error::Index(format!("Qdrant query failed: {e}")))?;
-
-        let results = response
-            .result
-            .into_iter()
-            .map(|point| {
-                let score = point.score;
-                let payload = point.payload;
-                let text = payload
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let source = match (payload.get("path"), payload.get("section")) {
-                    (Some(p), Some(s)) => {
-                        let path = p.as_str().map(|s| s.as_str()).unwrap_or("");
-                        let section = s.as_str().map(|s| s.as_str()).unwrap_or("").to_string();
-                        Some(Source::File {
-                            path: PathBuf::from(path),
-                            section,
-                        })
-                    }
-                    _ => None,
-                };
-                SearchResult {
-                    score,
-                    text,
-                    source,
-                }
-            })
-            .collect();
-
-        Ok(results)
     }
 
     /// Index all Markdown files under `path`.
-    pub async fn index_path(&mut self, path: impl AsRef<Path>) -> Result<()> {
+    pub async fn index_path(&self, path: impl AsRef<Path>) -> Result<()> {
         let chunk_config = ChunkConfig::new(CHUNK_SIZE)
             .with_sizer(&self.embedding_builder.tokenizer)
             .with_overlap(OVERLAP)
@@ -382,31 +203,229 @@ impl DocumentIndex {
                 })
                 .collect();
 
-            if let Some(url) = &self.qdrant_url.clone() {
-                let batch: Vec<(&str, PathBuf, String, String)> = sub_chunks
-                    .iter()
-                    .map(|(t, p, h, s)| (t.as_str(), p.clone(), h.clone(), s.clone()))
-                    .collect();
-                self.qdrant_upsert(&url, &batch).await?;
-            }
+            let batch: Vec<(&str, PathBuf, String, String)> = sub_chunks
+                .iter()
+                .map(|(t, p, h, s)| (t.as_str(), p.clone(), h.clone(), s.clone()))
+                .collect();
+
+            let embedded = self.embed_chunks(&batch)?;
+            self.store.upsert(embedded).await?;
         }
 
         Ok(())
     }
 
     /// Index a raw string.
-    pub async fn index_str(&mut self, text: &str) -> Result<()> {
-        if let Some(url) = &self.qdrant_url.clone() {
-            let chunks = self.split_text(text)?;
-            let batch: Vec<(&str, PathBuf, String, String)> = chunks
-                .iter()
-                .map(|&chunk| {
-                    let hash = hex::encode(Sha256::digest(chunk.as_bytes()));
-                    (chunk, PathBuf::new(), hash, String::new())
-                })
-                .collect();
-            self.qdrant_upsert(&url, &batch).await?;
+    pub async fn index_str(&self, text: &str) -> Result<()> {
+        let chunks = self.split_text(text)?;
+        let batch: Vec<(&str, PathBuf, String, String)> = chunks
+            .iter()
+            .map(|&chunk| {
+                let hash = hex::encode(Sha256::digest(chunk.as_bytes()));
+                (chunk, PathBuf::new(), hash, String::new())
+            })
+            .collect();
+
+        let embedded = self.embed_chunks(&batch)?;
+        self.store.upsert(embedded).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::vector_store::InMemoryStore;
+    use std::sync::Arc;
+
+    /// Wrap an [`InMemoryStore`] in an `Arc` so we can inspect it after
+    /// handing ownership to [`DocumentIndex`].
+    struct SharedInMemoryStore(Arc<InMemoryStore>);
+
+    impl SharedInMemoryStore {
+        fn new() -> (Self, Arc<InMemoryStore>) {
+            let inner = Arc::new(InMemoryStore::new());
+            (Self(Arc::clone(&inner)), inner)
         }
-        Ok(())
+    }
+
+    #[async_trait::async_trait]
+    impl VectorStore for SharedInMemoryStore {
+        async fn upsert(&self, chunks: Vec<Chunk>) -> Result<()> {
+            self.0.upsert(chunks).await
+        }
+
+        async fn search(
+            &self,
+            dense: Vec<f32>,
+            sparse_indices: Vec<u32>,
+            sparse_values: Vec<f32>,
+            max_results: u64,
+        ) -> Result<Vec<SearchResult>> {
+            self.0
+                .search(dense, sparse_indices, sparse_values, max_results)
+                .await
+        }
+    }
+
+    /// Build a [`DocumentIndex`] backed by an [`InMemoryStore`] and return
+    /// both the index and a shared handle to the store for inspection.
+    async fn make_index() -> (DocumentIndex, Arc<InMemoryStore>) {
+        let (wrapper, store_ref) = SharedInMemoryStore::new();
+        let index = DocumentIndex::new(Box::new(wrapper))
+            .await
+            .expect("Failed to build DocumentIndex");
+        (index, store_ref)
+    }
+
+    #[tokio::test]
+    async fn index_str_stores_chunks() {
+        let (index, store) = make_index().await;
+        index
+            .index_str("The quick brown fox jumps over the lazy dog.")
+            .await
+            .expect("index_str failed");
+
+        assert!(
+            !store.stored_chunks().is_empty(),
+            "store should contain at least one chunk after indexing"
+        );
+    }
+
+    #[tokio::test]
+    async fn index_str_chunk_text_matches_input() {
+        let (index, store) = make_index().await;
+        let text = "Paladins swear an Oath of Devotion to fight evil.";
+        index.index_str(text).await.expect("index_str failed");
+
+        let chunks = store.stored_chunks();
+        assert!(
+            chunks.iter().any(|c| c.text.contains("Paladins")),
+            "stored chunk should contain the original text"
+        );
+    }
+
+    #[tokio::test]
+    async fn index_str_embeddings_are_non_zero() {
+        let (index, store) = make_index().await;
+        index
+            .index_str("A wizard casts fireball.")
+            .await
+            .expect("index_str failed");
+
+        for chunk in store.stored_chunks() {
+            let norm: f32 = chunk.dense.iter().map(|x| x * x).sum::<f32>().sqrt();
+            assert!(norm > 0.0, "dense embedding should not be the zero vector");
+        }
+    }
+
+    #[tokio::test]
+    async fn search_returns_relevant_result() {
+        let (index, _store) = make_index().await;
+
+        index
+            .index_str("Druids can wildshape into animals.")
+            .await
+            .expect("index_str failed");
+
+        let results = index
+            .search("wildshape transformation", 3)
+            .await
+            .expect("search failed");
+
+        assert!(
+            !results.is_empty(),
+            "search should return at least one result"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_scores_are_bounded() {
+        let (index, _store) = make_index().await;
+
+        index
+            .index_str("Rangers are skilled trackers and hunters.")
+            .await
+            .expect("index_str failed");
+
+        let results = index
+            .search("tracking and hunting", 5)
+            .await
+            .expect("search failed");
+
+        for result in &results {
+            assert!(
+                result.score >= -1.0 && result.score <= 1.0,
+                "cosine similarity must be in [-1, 1], got {}",
+                result.score
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn index_str_is_idempotent() {
+        let (index, store) = make_index().await;
+        let text = "Rogues excel at stealth and deception.";
+
+        index.index_str(text).await.expect("first index_str failed");
+        let count_after_first = store.stored_chunks().len();
+
+        index
+            .index_str(text)
+            .await
+            .expect("second index_str failed");
+        let count_after_second = store.stored_chunks().len();
+
+        assert_eq!(
+            count_after_first, count_after_second,
+            "re-indexing identical text should not grow the store (upsert semantics)"
+        );
+    }
+
+    #[tokio::test]
+    async fn index_path_indexes_markdown_files() {
+        let (index, store) = make_index().await;
+
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        std::fs::write(
+            dir.path().join("spells.md"),
+            "# Fireball\nA bright streak flashes from your finger.",
+        )
+        .expect("failed to write temp file");
+
+        index
+            .index_path(dir.path())
+            .await
+            .expect("index_path failed");
+
+        let chunks = store.stored_chunks();
+        assert!(
+            !chunks.is_empty(),
+            "store should contain chunks after indexing a directory"
+        );
+        assert!(
+            chunks
+                .iter()
+                .any(|c| c.text.contains("Fireball") || c.text.contains("bright streak")),
+            "chunks should contain content from the markdown file"
+        );
+    }
+
+    #[tokio::test]
+    async fn index_path_ignores_non_markdown_files() {
+        let (index, store) = make_index().await;
+
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        std::fs::write(dir.path().join("notes.txt"), "This is a plain text file.")
+            .expect("failed to write temp file");
+
+        index
+            .index_path(dir.path())
+            .await
+            .expect("index_path failed");
+
+        assert!(
+            store.stored_chunks().is_empty(),
+            "non-markdown files should not be indexed"
+        );
     }
 }
