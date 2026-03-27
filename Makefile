@@ -22,3 +22,4 @@ qdrant:
 
 qdrant-clean:
 	@docker volume rm qdrant_storage
+
