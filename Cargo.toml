@@ -4,12 +4,10 @@ members = [
   "cli",
   "lib",
 ]
-
-[package]
-name = "dmtui"
-version = "0.1.0"
-edition = "2024"
-license = "MIT"
+default-members = [
+  "cli",
+  "lib",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -35,52 +33,3 @@ tokio = { version = "1.48.0", default-features = false }
 tokenizers = { version = "0.22.2", default-features = false }
 unwrap-infallible = { version = "1.0.0", default-features = false }
 walkdir = { version = "2.5.0", default-features = false }
-
-[dependencies]
-async-channel = "2.3.1"
-caith = { version = "4.2.4", default-features = false }
-clap = { version = "4.5.53", default-features = false, features = [
-    "derive",
-    "std",
-] }
-config = { version = "0.15.19", default-features = false, features = ["toml"] }
-crossterm = { version = "0.29.0", features = ["event-stream"] }
-dirs = { version = "6.0.0", default-features = false }
-futures = "0.3.31"
-ignore = { version = "0.4.25", default-features = false }
-libsql = { version = "0.9.29", default-features = false, features = ["core"] }
-llm = { version = "1.3.6", features = ["anthropic"], default-features = false }
-log = { version = "0.4.28", default-features = false }
-model2vec-rs = { version = "0.1.4", default-features = false, features = ["onig"] }
-opentelemetry-appender-log = { version = "0.31.0", default-features = false }
-opentelemetry-otlp = { version = "0.31.0", default-features = false, features = [
-    "logs",
-    "http-proto",
-] }
-opentelemetry_sdk = { version = "0.31.0", default-features = false }
-pulldown-cmark = "0.13.0"
-ratatui = "0.29.0"
-regex = { version = "1.12.2", default-features = false, features = [
-    "unicode-case",
-] }
-reqwest = { version = "0.12.24", default-features = false, features = [
-    "json",
-    "native-tls",
-] }
-rmcp = { version = "0.8.5", default-features = false, features = ["base64", "server", "client", "macros"] }
-rmcp-in-process-transport = { version = "0.3.1", default-features = false }
-
-serde = { version = "1.0.219", default-features = false, features = [
-    "serde_derive",
-] }
-serde_json = { version = "1.0.145", default-features = false, features = [
-    "std",
-] }
-serde_yaml = { version = "0.9.30", default-features = false }
-shlex = { version = "1.3.0", default-features = false }
-tempfile = "3.23.0"
-textwrap = { version = "0.16.2", features = ["hyphenation"] }
-tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "rt-multi-thread", "sync"] }
-
-[target.'cfg(unix)'.dependencies]
-syslog = { version = "7.0.0", default-features = false }

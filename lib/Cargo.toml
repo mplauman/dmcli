@@ -7,19 +7,17 @@ license.workspace = true
 [dependencies]
 async-trait = { workspace = true }
 caith = { workspace = true }
-candle-core = { workspace = true, features = [
+candle-core = { workspace = true }
+candle-nn = { workspace = true }
+candle-transformers = { workspace = true }
+hex = { workspace = true, features = [
+  "alloc",
 ] }
-candle-nn = { workspace = true, features = []}
-candle-transformers = { workspace = true, features = [
-] }
-hex = { workspace = true, features = ["alloc"] }
-hf-hub = { workspace = true, features = [
-] }
-pulldown-cmark = { workspace = true, features = [] }
-qdrant-client = { workspace = true, features = [] }
-serde_json = { workspace = true, features = [
-] }
-sha2 = { workspace = true, features = [] }
+hf-hub = { workspace = true }
+pulldown-cmark = { workspace = true }
+qdrant-client = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
 tempfile = { workspace = true }
 text-splitter = { workspace = true, features = [
   "markdown",
