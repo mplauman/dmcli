@@ -13,6 +13,7 @@ lib = { path = "../lib" }
 dirs = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 toml = { workspace = true, features = ["parse"] }
+toml_edit = { workspace = true, features = ["parse", "display"] }
 clap = { workspace = true, features = [
   "color",
   "derive",

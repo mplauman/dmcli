@@ -1,12 +1,28 @@
 use lib::dice;
 use lib::index::{DocumentIndex, NoopStore, SearchResults, SqliteStore, VectorStore};
 use result::Result;
+use std::process;
 
 mod config;
 mod result;
 
 fn main() -> Result<()> {
     let config = config::AppConfig::parse()?;
+
+    // Handle config subcommands before building the index — they don't need
+    // the Qdrant connection or the embedding model.
+    if let config::Command::Config { action } = config.command {
+        match config::run_config_action(action, config.config_path.as_deref()) {
+            Ok(msg) => {
+                println!("{msg}");
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                process::exit(1);
+            }
+        }
+    }
 
     let rt = tokio::runtime::Runtime::new()?;
     let store: Box<dyn VectorStore> = match config.db_path {
@@ -16,6 +32,7 @@ fn main() -> Result<()> {
     let index = rt.block_on(DocumentIndex::new(store))?;
 
     match config.command {
+        config::Command::Config { .. } => unreachable!("handled above"),
         config::Command::Roll { expr, output } => {
             let roll = dice::roll(&expr.join(" "))?;
             let formatted = match output {

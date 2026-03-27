@@ -21,12 +21,59 @@
 //! path = "/home/user/documents/campaign"
 //! ```
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Deserialize;
 
 use crate::result::{Error, Result};
+
+// ---------------------------------------------------------------------------
+// Config schema — single source of truth for keys, sections, and comments
+// ---------------------------------------------------------------------------
+
+/// A single configurable key within a TOML section.
+struct SchemaKey {
+    /// TOML key name (snake_case).
+    key: &'static str,
+    /// Human-readable description rendered as a `#` comment line.
+    comment: &'static str,
+    /// The literal TOML value to write (e.g. `"http://localhost:6334"`).
+    /// `None` means the key is written commented-out with no value.
+    default_value: Option<&'static str>,
+    /// Whether to write this key commented-out even when a default is present.
+    commented_out: bool,
+}
+
+/// A TOML section (table header) plus its keys.
+struct SchemaSection {
+    /// Dotted TOML table path, e.g. `"dmcli"` or `"dmcli.index"`.
+    table: &'static str,
+    keys: &'static [SchemaKey],
+}
+
+/// The full config schema, ordered as they should appear in the file.
+static SCHEMA: &[SchemaSection] = &[
+    SchemaSection {
+        table: "dmcli",
+        keys: &[SchemaKey {
+            key: "db_path",
+            comment: "Path to the SQLite database file used for vector storage.\n# Default: not set (search and index are no-ops without this)",
+            default_value: None,
+            commented_out: true,
+        }],
+    },
+    SchemaSection {
+        table: "dmcli.index",
+        keys: &[SchemaKey {
+            key: "path",
+            comment: "Default directory to index when none is supplied on the command line.",
+            default_value: None,
+            commented_out: true,
+        }],
+    },
+];
 
 // ---------------------------------------------------------------------------
 // CLI layer (raw clap parse, before config-file merging)
@@ -83,6 +130,31 @@ enum CliCommand {
         output: OutputFormat,
         text: Vec<String>,
     },
+
+    /// Manage the dmcli configuration file
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ConfigAction {
+    /// Write a default configuration file.
+    ///
+    /// Writes to $XDG_CONFIG_HOME/dmcli/config.toml (or --config path).
+    /// Fails if the file already exists unless --force is given.
+    Init {
+        /// Overwrite an existing config file.
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Add any keys that are missing from the existing configuration file.
+    ///
+    /// New keys are inserted into the correct section in alphabetical order.
+    /// Existing keys and formatting are left untouched.
+    Update,
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +237,8 @@ pub enum Command {
         text: Vec<String>,
         output: OutputFormat,
     },
+    /// Manage the config file.
+    Config { action: ConfigAction },
 }
 
 /// The merged result of CLI flags and config file values.
@@ -177,6 +251,8 @@ pub struct AppConfig {
     pub db_path: Option<PathBuf>,
     /// The resolved command to run.
     pub command: Command,
+    /// The config file path supplied via `--config`, or `None` for the default.
+    pub config_path: Option<PathBuf>,
 }
 
 impl AppConfig {
@@ -217,10 +293,207 @@ impl AppConfig {
             }
 
             CliCommand::Search { text, output } => Command::Search { text, output },
+
+            CliCommand::Config { action } => Command::Config { action },
         };
 
-        Ok(Self { db_path, command })
+        Ok(Self {
+            db_path,
+            command,
+            config_path: cli.config,
+        })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Config init / update
+// ---------------------------------------------------------------------------
+
+/// Execute a `config` subcommand action, returning a human-readable message.
+pub fn run_config_action(action: ConfigAction, path: Option<&Path>) -> Result<String> {
+    let resolved = match path {
+        Some(p) => p.to_path_buf(),
+        None => default_config_path()?,
+    };
+
+    match action {
+        ConfigAction::Init { force } => config_init(&resolved, force),
+        ConfigAction::Update => config_update(&resolved),
+    }
+}
+
+/// Write a fresh default config file.
+fn config_init(path: &Path, force: bool) -> Result<String> {
+    if path.exists() && !force {
+        return Err(Error::Config(format!(
+            "{} already exists — use --force to overwrite",
+            path.display()
+        )));
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| Error::Config(format!("cannot create {}: {e}", parent.display())))?;
+    }
+
+    fs::write(path, render_schema())
+        .map_err(|e| Error::Config(format!("cannot write {}: {e}", path.display())))?;
+
+    Ok(format!("Created {}", path.display()))
+}
+
+/// Add any keys missing from an existing config file, preserving all existing
+/// content and formatting.
+fn config_update(path: &Path) -> Result<String> {
+    if !path.exists() {
+        return config_init(path, false);
+    }
+
+    let raw = fs::read_to_string(path)
+        .map_err(|e| Error::Config(format!("cannot read {}: {e}", path.display())))?;
+
+    let mut doc: toml_edit::DocumentMut = raw
+        .parse()
+        .map_err(|e| Error::Config(format!("cannot parse {}: {e}", path.display())))?;
+
+    let mut added: Vec<String> = Vec::new();
+
+    for section in SCHEMA {
+        // Walk the dotted table path, creating tables as needed.
+        let parts: Vec<&str> = section.table.split('.').collect();
+        let table = ensure_table(&mut doc, &parts);
+
+        // Collect existing keys so we can detect what is missing.
+        // Sort the schema keys and insert missing ones alphabetically.
+        let mut section_keys: Vec<&SchemaKey> = section.keys.iter().collect();
+        section_keys.sort_by_key(|k| k.key);
+
+        for schema_key in section_keys {
+            // Only live (non-commented-out) keys with a default value can be
+            // inserted by update — purely commented-out keys exist only in
+            // the init template.
+            if schema_key.commented_out || schema_key.default_value.is_none() {
+                continue;
+            }
+
+            if table.contains_key(schema_key.key) {
+                continue;
+            }
+
+            // Find the alphabetical insertion position among current keys.
+            let mut existing_keys: Vec<String> = table.iter().map(|(k, _)| k.to_string()).collect();
+            existing_keys.push(schema_key.key.to_string());
+            existing_keys.sort();
+            let insert_pos = existing_keys
+                .iter()
+                .position(|k| k == schema_key.key)
+                .unwrap_or(existing_keys.len().saturating_sub(1));
+
+            insert_live_key(table, schema_key, insert_pos);
+            added.push(format!("{}.{}", section.table, schema_key.key));
+        }
+    }
+
+    fs::write(path, doc.to_string())
+        .map_err(|e| Error::Config(format!("cannot write {}: {e}", path.display())))?;
+
+    if added.is_empty() {
+        Ok(format!("{} is already up to date", path.display()))
+    } else {
+        Ok(format!(
+            "Updated {} — added: {}",
+            path.display(),
+            added.join(", ")
+        ))
+    }
+}
+
+/// Navigate (or create) a chain of dotted table keys within a document,
+/// returning a mutable reference to the innermost table.
+fn ensure_table<'a>(
+    doc: &'a mut toml_edit::DocumentMut,
+    parts: &[&str],
+) -> &'a mut toml_edit::Table {
+    let mut current = doc.as_table_mut();
+    for &part in parts {
+        // Insert a table if the key is absent.
+        if !current.contains_key(part) {
+            current.insert(part, toml_edit::Item::Table(toml_edit::Table::new()));
+        }
+        current = current
+            .get_mut(part)
+            .and_then(|item| item.as_table_mut())
+            .expect("just inserted a table");
+    }
+    current
+}
+
+/// Insert a live (non-commented-out) schema key into a table at a given
+/// position, with its description rendered as a `#` comment above it.
+///
+/// Only keys that have a `default_value` and are not `commented_out` are
+/// inserted — purely commented-out keys exist only in the `init` template
+/// and are never added by `update`.
+fn insert_live_key(table: &mut toml_edit::Table, schema_key: &SchemaKey, position: usize) {
+    let raw = match schema_key.default_value {
+        Some(v) if !schema_key.commented_out => v,
+        // Nothing live to insert.
+        _ => return,
+    };
+
+    // Parse the raw TOML value string so toml_edit owns it properly.
+    let parsed: toml_edit::Value = raw.parse().unwrap_or_else(|_| toml_edit::Value::from(raw));
+
+    let comment_prefix: String = schema_key
+        .comment
+        .lines()
+        .map(|l| format!("# {l}\n"))
+        .collect();
+
+    let mut val = parsed;
+    val.decor_mut().set_prefix(comment_prefix);
+
+    let item = toml_edit::Item::Value(val);
+
+    // toml_edit 0.22 has no positional insert on Table, so we rebuild order
+    // by collecting all pairs, splicing, clearing, and re-inserting.
+    let mut pairs: Vec<(String, toml_edit::Item)> = table
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.clone()))
+        .collect();
+
+    pairs.insert(position, (schema_key.key.to_string(), item));
+
+    let keys: Vec<String> = pairs.iter().map(|(k, _)| k.clone()).collect();
+    for k in &keys {
+        table.remove(k);
+    }
+    for (k, v) in pairs {
+        table.insert(&k, v);
+    }
+}
+
+/// Render the full default config as a TOML string with every key commented
+/// out and annotated.
+fn render_schema() -> String {
+    let mut out = String::new();
+    for section in SCHEMA {
+        out.push_str(&format!("[{}]\n", section.table));
+        let mut keys: Vec<&SchemaKey> = section.keys.iter().collect();
+        keys.sort_by_key(|k| k.key);
+        for key in keys {
+            for line in key.comment.lines() {
+                out.push_str(&format!("# {line}\n"));
+            }
+            match (key.default_value, key.commented_out) {
+                (Some(v), true) => out.push_str(&format!("# {} = {v}\n", key.key)),
+                (Some(v), false) => out.push_str(&format!("{} = {v}\n", key.key)),
+                (None, _) => out.push_str(&format!("# {} =\n", key.key)),
+            }
+            out.push('\n');
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -342,5 +615,158 @@ whatever = 42
         let err = FileConfig::load(Some(f.path())).expect_err("should fail");
 
         assert!(matches!(err, Error::Config(_)));
+    }
+
+    // -----------------------------------------------------------------------
+    // config init
+    // -----------------------------------------------------------------------
+
+    /// init writes a file that is valid TOML.
+    #[test]
+    fn init_writes_valid_toml() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let path = tmp.path().join("config.toml");
+
+        let msg = config_init(&path, false).expect("init");
+        assert!(msg.contains("Created"));
+
+        let contents = std::fs::read_to_string(&path).expect("read");
+        toml::from_str::<toml::Value>(&contents).expect("valid TOML");
+    }
+
+    /// init creates parent directories if they don't exist.
+    #[test]
+    fn init_creates_parent_dirs() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let path = tmp.path().join("nested").join("dirs").join("config.toml");
+
+        config_init(&path, false).expect("init");
+        assert!(path.exists());
+    }
+
+    /// init fails without --force when the file already exists.
+    #[test]
+    fn init_fails_if_file_exists() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let path = tmp.path().join("config.toml");
+
+        config_init(&path, false).expect("first init");
+        let err = config_init(&path, false).expect_err("second init should fail");
+        assert!(matches!(err, Error::Config(_)));
+    }
+
+    /// init succeeds with --force when the file already exists.
+    #[test]
+    fn init_force_overwrites_existing() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let path = tmp.path().join("config.toml");
+
+        config_init(&path, false).expect("first init");
+        config_init(&path, true).expect("forced overwrite");
+    }
+
+    /// The generated file contains all expected section headers.
+    #[test]
+    fn init_output_contains_expected_sections() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let path = tmp.path().join("config.toml");
+
+        config_init(&path, false).expect("init");
+        let contents = std::fs::read_to_string(&path).expect("read");
+
+        assert!(contents.contains("[dmcli]"));
+        assert!(contents.contains("[dmcli.index]"));
+    }
+
+    /// All schema keys appear in the generated file (commented out).
+    #[test]
+    fn init_output_contains_all_schema_keys() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let path = tmp.path().join("config.toml");
+
+        config_init(&path, false).expect("init");
+        let contents = std::fs::read_to_string(&path).expect("read");
+
+        for section in SCHEMA {
+            for key in section.keys {
+                assert!(
+                    contents.contains(key.key),
+                    "expected key '{}' in generated config",
+                    key.key
+                );
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // config update
+    // -----------------------------------------------------------------------
+
+    /// update on a missing file creates it (same as init).
+    #[test]
+    fn update_missing_file_creates_it() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let path = tmp.path().join("config.toml");
+
+        let msg = config_update(&path).expect("update");
+        assert!(msg.contains("Created"));
+        assert!(path.exists());
+    }
+
+    /// update on an already-complete file reports no changes.
+    #[test]
+    fn update_up_to_date_file_reports_no_changes() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let path = tmp.path().join("config.toml");
+
+        // Start from the init output, which contains every key.
+        config_init(&path, false).expect("init");
+        let msg = config_update(&path).expect("update");
+        assert!(
+            msg.contains("up to date"),
+            "expected 'up to date', got: {msg}"
+        );
+    }
+
+    /// update preserves existing values and only adds missing live keys.
+    #[test]
+    fn update_preserves_existing_content() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let path = tmp.path().join("config.toml");
+
+        let initial = "[dmcli]\nqdrant_url = \"http://my-server:6334\"\n";
+        std::fs::write(&path, initial).expect("write");
+
+        config_update(&path).expect("update");
+
+        let contents = std::fs::read_to_string(&path).expect("read");
+        // The user's value must be preserved verbatim.
+        assert!(
+            contents.contains("\"http://my-server:6334\""),
+            "existing value was clobbered: {contents}"
+        );
+    }
+
+    /// update on a file with malformed TOML returns an error.
+    #[test]
+    fn update_malformed_toml_returns_error() {
+        let f = write_config("this is not [ valid toml !!!");
+
+        let err = config_update(f.path()).expect_err("should fail");
+        assert!(matches!(err, Error::Config(_)));
+    }
+
+    /// update output is valid TOML.
+    #[test]
+    fn update_output_is_valid_toml() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let path = tmp.path().join("config.toml");
+
+        // Start with a minimal file missing all keys.
+        std::fs::write(&path, "[dmcli]\n").expect("write");
+        config_update(&path).expect("update");
+
+        let contents = std::fs::read_to_string(&path).expect("read");
+        toml::from_str::<toml::Value>(&contents).expect("valid TOML");
     }
 }
