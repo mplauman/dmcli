@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use lib::{dice, index};
 use result::Result;
+use std::path::PathBuf;
 
 mod result;
 
@@ -8,6 +9,10 @@ mod result;
 #[command(version, about, long_about = None)]
 #[command(propagate_version = true)]
 struct Cli {
+    /// Path to the database file. If not provided, a temporary file is used.
+    #[arg(short, long, global = true)]
+    database: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -28,7 +33,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let rt = tokio::runtime::Runtime::new()?;
-    let mut index = rt.block_on(index::DocumentIndex::<1024>::new())?;
+    let mut index = rt.block_on(index::DocumentIndex::<384>::new(cli.database))?;
 
     match &cli.command {
         Command::Roll { expr } => match dice::roll(&expr.join(" "))? {
@@ -48,7 +53,7 @@ fn main() -> Result<()> {
         Command::Search { text } => rt
             .block_on(index.search::<7>(&text.join(" ")))?
             .into_iter()
-            .for_each(|r| println!("{r}")),
+            .for_each(|r| println!("{r}\n\n")),
     };
 
     Ok(())

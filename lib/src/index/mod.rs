@@ -5,7 +5,7 @@ use hf_hub::{Repo, RepoType, api::sync::Api};
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 use sha2::{Digest, Sha256};
 use std::fs::read_to_string;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use text_splitter::{ChunkConfig, MarkdownSplitter, TextSplitter};
 use tokenizers::{EncodeInput, PaddingParams, Tokenizer};
 use walkdir::{DirEntry, WalkDir};
@@ -298,7 +298,10 @@ pub struct DocumentIndex<const CHUNK_SIZE: usize> {
 }
 
 impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
-    pub async fn new() -> Result<Self> {
+    /// Create a new [`DocumentIndex`], optionally backed by a database at the
+    /// given path. If `db_path` is `None`, a temporary database file is used
+    /// and deleted on drop.
+    pub async fn new(db_path: Option<PathBuf>) -> Result<Self> {
         let device = Device::Cpu;
 
         let repo = Repo::with_revision(
@@ -337,8 +340,13 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
 
         let model = BertModel::load(vb, &config)?;
 
+        let db = match db_path {
+            Some(path) => crate::database::Database::<MODEL_DIMS>::open(path).await?,
+            None => crate::database::Database::<MODEL_DIMS>::new().await?,
+        };
+
         let result = Self {
-            db: crate::database::Database::<MODEL_DIMS>::new().await?,
+            db,
             embedding_builder: EmbeddingBuilder {
                 device,
                 tokenizer,
@@ -352,7 +360,7 @@ impl<const CHUNK_SIZE: usize> DocumentIndex<CHUNK_SIZE> {
     fn split_text<'a>(&self, text: &'a str) -> Result<Vec<&'a str>> {
         let chunk_config = ChunkConfig::new(CHUNK_SIZE)
             .with_sizer(&self.embedding_builder.tokenizer)
-            .with_overlap(CHUNK_SIZE / 64)
+            .with_overlap(CHUNK_SIZE / 4)
             .expect("Overlap is a sane value");
 
         let splitter = TextSplitter::new(chunk_config);
@@ -501,7 +509,7 @@ mod tests {
 
     #[tokio::test]
     async fn simple_search() {
-        let index = DocumentIndex::<5>::new().await.unwrap();
+        let index = DocumentIndex::<5>::new(None).await.unwrap();
 
         let sentences = vec![
             "what were the derro doing beneath mog caern in the previous session?",
@@ -523,7 +531,7 @@ mod tests {
 
     #[tokio::test]
     async fn encode_sentences() {
-        let mut index = DocumentIndex::<30>::new().await.unwrap();
+        let mut index = DocumentIndex::<30>::new(None).await.unwrap();
 
         let sentences = vec![
             "The cat sits outside",

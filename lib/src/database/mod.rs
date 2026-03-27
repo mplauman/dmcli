@@ -1,18 +1,47 @@
 use crate::Result;
 use libsql::{Builder, Connection};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
+/// Tracks the backing storage for the database file.
+enum DatabaseFile {
+    /// A temporary file that is deleted when dropped.
+    Temporary(NamedTempFile),
+    /// A persistent file at a user-supplied path.
+    Persistent(PathBuf),
+}
+
+impl DatabaseFile {
+    fn path(&self) -> &Path {
+        match self {
+            DatabaseFile::Temporary(f) => f.path(),
+            DatabaseFile::Persistent(p) => p.as_path(),
+        }
+    }
+}
+
+/// A local SQLite vector database backed by either a temporary file or a
+/// caller-supplied path.
 pub struct Database<const EMBEDDINGS_SIZE: usize> {
     conn: Connection,
-    file: NamedTempFile,
+    file: DatabaseFile,
 }
 
 impl<const EMBEDDINGS_SIZE: usize> Database<EMBEDDINGS_SIZE> {
+    /// Create a new database backed by a temporary file that is deleted on drop.
     pub async fn new() -> Result<Self> {
         let file = NamedTempFile::new()?;
-        let path = file.path().to_string_lossy().to_string();
+        Self::open_file(DatabaseFile::Temporary(file)).await
+    }
 
+    /// Open (or create) a database at the given path. The file persists after
+    /// the [`Database`] is dropped.
+    pub async fn open(path: PathBuf) -> Result<Self> {
+        Self::open_file(DatabaseFile::Persistent(path)).await
+    }
+
+    async fn open_file(file: DatabaseFile) -> Result<Self> {
+        let path = file.path().to_string_lossy().to_string();
         let db = Builder::new_local(&path).build().await?;
         let conn = db.connect()?;
 
@@ -108,6 +137,19 @@ mod tests {
     async fn create_database() {
         let db = Database::<1024>::new().await.unwrap();
         assert!(db.file.path().exists());
+    }
+
+    #[tokio::test]
+    async fn create_database_at_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+
+        let db = Database::<1024>::open(path.clone()).await.unwrap();
+        assert!(path.exists());
+        drop(db);
+
+        // File must persist after drop.
+        assert!(path.exists());
     }
 
     #[tokio::test]
