@@ -29,10 +29,7 @@ enum Command {
     Index { path: String },
 
     /// Run a search against the RAG database for a block of text
-    Search {
-        text: Vec<String>,
-        max_results: Option<u64>,
-    },
+    Search { text: Vec<String> },
 }
 
 fn main() -> Result<()> {
@@ -60,8 +57,8 @@ fn main() -> Result<()> {
             Ok(_) => println!("Finished indexing {path}"),
             Err(e) => println!("Indexing failed: {:?}", e),
         },
-        Command::Search { text, max_results } => rt
-            .block_on(index.search(&text.join(" "), max_results.unwrap_or(7)))?
+        Command::Search { text } => rt
+            .block_on(index.search(&text.join(" "), 7))?
             .into_iter()
             .for_each(|r| println!("{r}\n\n")),
     };
