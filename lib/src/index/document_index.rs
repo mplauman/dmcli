@@ -1,7 +1,7 @@
 use candle_core::Device;
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config, DTYPE};
-use hf_hub::{Repo, RepoType, api::sync::Api};
+use hf_hub::{Repo, RepoType, api::tokio::Api};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::read_to_string;
@@ -43,9 +43,9 @@ impl DocumentIndex {
         let (config_filename, tokenizer_filename, weights_filename) = {
             let api = Api::new()?;
             let api = api.repo(repo);
-            let config = api.get("config.json")?;
-            let tokenizer = api.get("tokenizer.json")?;
-            let weights = api.get("model.safetensors")?;
+            let config = api.get("config.json").await?;
+            let tokenizer = api.get("tokenizer.json").await?;
+            let weights = api.get("model.safetensors").await?;
             (config, tokenizer, weights)
         };
 
