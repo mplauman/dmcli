@@ -28,8 +28,8 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<hf_hub::api::sync::ApiError> for Error {
-    fn from(err: hf_hub::api::sync::ApiError) -> Self {
+impl From<hf_hub::api::tokio::ApiError> for Error {
+    fn from(err: hf_hub::api::tokio::ApiError) -> Self {
         Error::ModelDownload(err.to_string())
     }
 }
