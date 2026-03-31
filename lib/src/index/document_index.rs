@@ -240,6 +240,12 @@ mod tests {
     use super::*;
     use crate::index::vector_store::InMemoryStore;
     use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    /// Serialises all [`DocumentIndex::new`] calls across the test process so
+    /// that concurrent tests do not race to acquire the same `hf-hub` file
+    /// locks when the model cache is cold.
+    static MODEL_INIT: Mutex<()> = Mutex::const_new(());
 
     /// Wrap an [`InMemoryStore`] in an `Arc` so we can inspect it after
     /// handing ownership to [`DocumentIndex`].
@@ -273,8 +279,12 @@ mod tests {
 
     /// Build a [`DocumentIndex`] backed by an [`InMemoryStore`] and return
     /// both the index and a shared handle to the store for inspection.
+    ///
+    /// Construction is serialised via [`MODEL_INIT`] to avoid concurrent
+    /// `hf-hub` file-lock races when the model cache is cold.
     async fn make_index() -> (DocumentIndex, Arc<InMemoryStore>) {
         let (wrapper, store_ref) = SharedInMemoryStore::new();
+        let _guard = MODEL_INIT.lock().await;
         let index = DocumentIndex::new(Box::new(wrapper))
             .await
             .expect("Failed to build DocumentIndex");
