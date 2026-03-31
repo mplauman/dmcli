@@ -73,7 +73,7 @@ jobs:
       # Keep this pinned to the minimum supported Rust version declared in
       # Cargo.toml (workspace.package.rust-version), or update it there first.
       - name: Install Rust (MSRV)
-        uses: dtolnay/rust-toolchain@1.100
+        uses: dtolnay/rust-toolchain@1.85
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
