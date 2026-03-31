@@ -8,27 +8,27 @@
 
 ## Overview
 
-`dmcli` is a Rust-based Dungeon Master's helper tool designed to search through Obsidian notes for session and world building information. It provides a command-line interface to help DMs quickly find and reference their campaign notes during gameplay.
+`dmcli` is a Dungeon Master's command-line toolkit. It provides dice rolling and
+semantic search over Markdown notes using local BERT embeddings — no external AI
+service required.
 
 ## Features
 
-- Written in Rust for high performance and reliability
-- **Integrated dice roller** using the [caith](https://crates.io/crates/caith) library for comprehensive dice notation support
-- **LLM integration** for natural language searches through Obsidian vaults
-- **Obsidian vault integration** for searching and accessing campaign notes
-- Terminal-based user interface for quick access during gameplay
-- Configurable settings via TOML configuration file
+- **Dice roller** — full dice notation support via the [caith](https://crates.io/crates/caith) library, including repeated rolls and reason annotations
+- **Semantic search** — hybrid dense + sparse vector search over any directory of Markdown files using a local `sentence-transformers/all-MiniLM-L6-v2` BERT model
+- **Markdown indexing** — walks a directory recursively, splits files into overlapping chunks that respect heading boundaries, and stores them in a vector database
+- **Qdrant backend** — optional [Qdrant](https://qdrant.tech) vector store with hybrid Reciprocal Rank Fusion (RRF) search; falls back to a no-op store when no URL is provided
 
 ## Getting Started
 
 ### Prerequisites
 
-- Rust 1.70+ (2024 edition)
+- Rust (2024 edition)
 - Git
+- A running [Qdrant](https://qdrant.tech) instance (optional; required for `index` and `search`)
 
 ### Supported Platforms
 
-`dmcli` supports the following platforms:
 - **Linux**: x86_64-unknown-linux-gnu
 - **macOS**: x86_64-apple-darwin (Intel), aarch64-apple-darwin (Apple Silicon)
 - **Windows**: x86_64-pc-windows-msvc
@@ -37,87 +37,128 @@
 
 #### Option 1: Install from Release
 
-1. Download the latest release for your platform from the [Releases page](../../releases)
+1. Download the latest release for your platform from the [Releases page](../../releases).
 2. Extract the archive:
-   
+
    **Linux/macOS:**
-   ```bash
+   ```
    tar -xzf dmcli-<target>.tar.gz
    ```
-   
+
    **Windows:**
-   ```powershell
+   ```
    Expand-Archive -Path dmcli-<target>.zip -DestinationPath .
    ```
 
 3. Move the binary to your PATH:
-   
+
    **Linux/macOS:**
-   ```bash
+   ```
    sudo mv dmcli /usr/local/bin/
    ```
-   
-   **Windows:**
-   Move `dmcli.exe` to a directory in your PATH or add the current directory to your PATH environment variable.
+
+   **Windows:** Move `dmcli.exe` to any directory already on your PATH.
 
 #### Option 2: Compile from Source
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/mplauman/dmcli.git
-   cd dmcli
-   ```
-
-2. Build the project:
-   ```bash
-   cargo build --release
-   ```
-
-3. The binary will be available at:
-   - **Linux/macOS:** `target/release/dmcli`
-   - **Windows:** `target/release/dmcli.exe`
-
-### Usage
-
-Run the application:
-```bash
-dmcli
+```
+git clone https://github.com/mplauman/dmcli.git
+cd dmcli
+cargo build --release
 ```
 
-Use the built-in commands:
-- `roll 2d6` - Roll dice using standard dice notation
-- `exit` - Exit the application
+The binary will be at `target/release/dmcli` (or `target/release/dmcli.exe` on Windows).
 
-## Configuration
+## Usage
 
-`dmcli` uses a TOML configuration file located at `~/.config/dmcli.toml` (or your system's equivalent config directory).
-
-### Configuration Options
-
-Create a `dmcli.toml` file with the following structure:
-
-```toml
-[local]
-# Path to your Obsidian vault for note searching
-obsidian_vault = "/path/to/your/obsidian/vault"
-
-[logging]
-# Enable OpenTelemetry logging (optional)
-opentelemetry = false
+```
+dmcli [OPTIONS] <COMMAND>
 ```
 
-### Environment Variables
+### Global Options
 
-Configuration can also be set using environment variables with the `DMCLI_` prefix:
+| Option | Description |
+|---|---|
+| `-q, --qdrant-url <URL>` | URL of the Qdrant gRPC endpoint (e.g. `http://localhost:6334`). Required for `index` and `search`. |
 
-```bash
-export DMCLI_LOCAL_OBSIDIAN_VAULT="/path/to/your/vault"
-export DMCLI_LOGGING_OPENTELEMETRY=false
+### Commands
+
+#### `roll` — Roll dice
+
+Roll any expression supported by the [caith syntax](https://github.com/Geobert/caith?tab=readme-ov-file#syntax).
+
 ```
+dmcli roll <EXPR>
+```
+
+Examples:
+
+```
+dmcli roll 1d20
+dmcli roll 2d6+3
+dmcli roll 4d6 ^ 3        # roll 4d6, keep highest 3
+dmcli roll 2d10 ! Stealth  # roll with a reason annotation
+```
+
+Single rolls print the total; repeated rolls print each result as a list.
+
+#### `index` — Index a directory
+
+Walk a directory recursively and embed all Markdown (`.md`) files into the
+configured Qdrant collection. Hidden directories (names beginning with `.`)
+are skipped. The collection is created automatically on first use.
+
+Model weights are downloaded from Hugging Face on first run and cached locally
+by `hf-hub`.
+
+```
+dmcli --qdrant-url http://localhost:6334 index /path/to/notes
+```
+
+#### `search` — Search indexed notes
+
+Run a semantic query against previously indexed content. Results are ranked by
+hybrid dense + sparse similarity and printed with their source file, heading
+breadcrumb, relevance score, and matching text.
+
+```
+dmcli --qdrant-url http://localhost:6334 search what resistances do fire giants have
+```
+
+Output format per result:
+
+```
+Source:  /path/to/notes/monsters.md#Monsters/Fire Giant
+Score:   0.8731
+Fire giants are immune to fire damage and resistant to ...
+```
+
+## Architecture
+
+`dmcli` is a Cargo workspace with two crates:
+
+- **`lib`** — core library: dice rolling, document indexing, embedding, and vector store abstractions
+- **`cli`** — thin binary that wires `lib` to `clap`-parsed subcommands
+
+### Embedding & Search Pipeline
+
+1. **Chunking** — Markdown files are parsed with `pulldown-cmark`. Heading
+   boundaries are preserved and used as section metadata. Each logical section
+   is further split into overlapping token-budget chunks (~256 tokens, 50-token
+   overlap) by `text-splitter`.
+2. **Embedding** — Each chunk is encoded into a 384-dimensional dense vector
+   using the `all-MiniLM-L6-v2` BERT model running locally via `candle`.
+   A sparse log-TF vector is also computed from the tokenised text.
+3. **Storage** — Chunks are upserted into Qdrant under a `dmcli_chunks`
+   collection with named `dense` (Cosine HNSW) and `sparse` vector fields.
+   Upserts are idempotent — each chunk is keyed by the SHA-256 of its text.
+4. **Retrieval** — Queries are encoded the same way. Keywords are extracted
+   with a BERT-based n-gram scoring pass. Dense and sparse prefetch queries
+   are issued and fused with Reciprocal Rank Fusion (RRF).
 
 ## Contributing
 
-Contributions are welcome! Please open an issue or submit a pull request.
+Contributions are welcome. Please open an issue or submit a pull request.
 
 ## License
 
