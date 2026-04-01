@@ -16,8 +16,7 @@ jobs:
   audit:
     name: Audit
     runs-on: ubuntu-latest
-    permissions:
-      contents: write-all
+    permissions: write-all
     steps:
       - uses: actions/checkout@v6
 
