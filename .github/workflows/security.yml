@@ -17,7 +17,7 @@ jobs:
     name: Audit
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write-all
     steps:
       - uses: actions/checkout@v6
 
@@ -25,7 +25,6 @@ jobs:
         uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          create-issues: false
 
   deny:
     name: Deny
