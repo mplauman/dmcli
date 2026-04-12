@@ -7,14 +7,14 @@ use result::Result;
 
 mod result;
 
-/// Output format for search results.
+/// Output format for command results.
 #[derive(Clone, ValueEnum)]
 enum OutputFormat {
-    /// Human-readable Markdown document (default).
+    /// Human-readable Markdown (default).
     Markdown,
-    /// XML document blocks suitable for injection into an LLM prompt.
+    /// XML element suitable for injection into an LLM prompt.
     Xml,
-    /// JSON array for structured agent-skill responses.
+    /// JSON object or array for structured agent-skill responses.
     Json,
 }
 
@@ -33,7 +33,14 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Roll a dice expression using [Caith](https://github.com/Geobert/caith?tab=readme-ov-file#syntax)
-    Roll { expr: Vec<String> },
+    Roll {
+        /// Output format: markdown (default), xml, or json
+        #[arg(short, long, default_value = "markdown")]
+        output: OutputFormat,
+
+        /// The dice expression to roll (e.g. "2d6 + 3")
+        expr: Vec<String>,
+    },
 
     /// Index the contents of a directory for use as RAG inputs to the AI agent
     Index { path: String },
@@ -60,16 +67,15 @@ fn main() -> Result<()> {
     let index = rt.block_on(index::DocumentIndex::new(store))?;
 
     match &cli.command {
-        Command::Roll { expr } => match dice::roll(&expr.join(" "))? {
-            dice::DiceRoll::Single(value, reason) => println!(
-                "🎲 {value}{}",
-                reason.map(|r| format!(" ({r})")).unwrap_or_default()
-            ),
-            dice::DiceRoll::Multi(values, reason) => println!(
-                "🎲🎲 {values:?}{}",
-                reason.map(|r| format!(" ({r})")).unwrap_or_default()
-            ),
-        },
+        Command::Roll { expr, output } => {
+            let roll = dice::roll(&expr.join(" "))?;
+            let formatted = match output {
+                OutputFormat::Markdown => roll.to_string(),
+                OutputFormat::Xml => roll.to_xml(),
+                OutputFormat::Json => roll.to_json()?,
+            };
+            println!("{formatted}");
+        }
         Command::Index { path } => match rt.block_on(index.index_path(path)) {
             Ok(_) => println!("Finished indexing {path}"),
             Err(e) => println!("Indexing failed: {:?}", e),
