@@ -24,6 +24,7 @@ candle-transformers = { version = "0.9.2", default-features = false }
 clap = { version = "4.6.0", default-features = false }
 hex = { version = "0.4.3", default-features = false }
 hf-hub = { version = "0.5.0", default-features = false }
+libsql = { version = "0.9.30", features = ["core"] }
 pulldown-cmark = { version = "0.13.3", default-features = false }
 serde_json = { version = "1.0.149", default-features = false }
 sha2 = { version = "0.11.0", default-features = false }
@@ -33,4 +34,3 @@ tokio = { version = "1.50.0", default-features = false }
 tokenizers = { version = "0.22.2", default-features = false }
 unwrap-infallible = { version = "1.0.0", default-features = false }
 walkdir = { version = "2.5.0", default-features = false }
-libsql = { version = "0.4", features = ["core"] }
