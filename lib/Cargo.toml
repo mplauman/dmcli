@@ -15,7 +15,6 @@ hex = { workspace = true, features = [
 ] }
 hf-hub = { workspace = true, features = ["tokio", "native-tls"] }
 pulldown-cmark = { workspace = true }
-qdrant-client = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tempfile = { workspace = true }
@@ -27,6 +26,7 @@ tokenizers = { workspace = true, features = [
   "http",
 ] }
 walkdir = { workspace = true }
+libsql = { workspace = true, features = ["core"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = [
@@ -35,3 +35,4 @@ tokio = { workspace = true, features = [
   "rt-multi-thread",
   "sync",
 ] }
+tempfile = { workspace = true }

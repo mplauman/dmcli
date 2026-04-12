@@ -4,6 +4,10 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "dmcli"
+path = "src/main.rs"
+
 [dependencies]
 lib = { path = "../lib" }
 clap = { workspace = true, features = [
