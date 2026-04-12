@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use lib::{
     dice, index,
-    index::{NoopStore, QdrantStore},
+    index::{NoopStore, SqliteStore},
 };
 use result::Result;
 
@@ -11,10 +11,9 @@ mod result;
 #[command(version, about, long_about = None)]
 #[command(propagate_version = true)]
 struct Cli {
-    /// URL of the Qdrant instance to use for vector search (e.g. http://localhost:6334).
-    /// When not provided, only the local database is used.
-    #[arg(short, long, global = true)]
-    qdrant_url: Option<String>,
+    /// Path to SQLite database for vector storage (optional)
+    #[arg(short, long)]
+    db_path: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -36,8 +35,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let rt = tokio::runtime::Runtime::new()?;
-    let store: Box<dyn index::VectorStore> = match cli.qdrant_url.as_deref() {
-        Some(url) => Box::new(QdrantStore::new(url)),
+    let store: Box<dyn index::VectorStore> = match cli.db_path {
+        Some(path) => Box::new(rt.block_on(SqliteStore::new(&path))?),
         None => Box::new(NoopStore),
     };
     let index = rt.block_on(index::DocumentIndex::new(store))?;
