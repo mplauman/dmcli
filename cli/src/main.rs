@@ -1,11 +1,22 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use lib::{
     dice, index,
-    index::{NoopStore, SqliteStore},
+    index::{NoopStore, SearchResults, SqliteStore},
 };
 use result::Result;
 
 mod result;
+
+/// Output format for search results.
+#[derive(Clone, ValueEnum)]
+enum OutputFormat {
+    /// Human-readable Markdown document (default).
+    Markdown,
+    /// XML document blocks suitable for injection into an LLM prompt.
+    Xml,
+    /// JSON array for structured agent-skill responses.
+    Json,
+}
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -27,8 +38,15 @@ enum Command {
     /// Index the contents of a directory for use as RAG inputs to the AI agent
     Index { path: String },
 
-    /// Run a search against the RAG database for a block of text
-    Search { text: Vec<String> },
+    /// Search the RAG database for text relevant to a query
+    Search {
+        /// Output format: markdown (default), xml, or json
+        #[arg(short, long, default_value = "markdown")]
+        output: OutputFormat,
+
+        /// The query text
+        text: Vec<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -56,10 +74,15 @@ fn main() -> Result<()> {
             Ok(_) => println!("Finished indexing {path}"),
             Err(e) => println!("Indexing failed: {:?}", e),
         },
-        Command::Search { text } => rt
-            .block_on(index.search(&text.join(" "), 7))?
-            .into_iter()
-            .for_each(|r| println!("{r}\n\n")),
+        Command::Search { text, output } => {
+            let results = SearchResults::from(rt.block_on(index.search(&text.join(" "), 7))?);
+            let formatted = match output {
+                OutputFormat::Markdown => results.to_string(),
+                OutputFormat::Xml => results.to_xml(),
+                OutputFormat::Json => results.to_json()?,
+            };
+            println!("{formatted}");
+        }
     };
 
     Ok(())
