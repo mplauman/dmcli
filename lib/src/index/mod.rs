@@ -1,6 +1,6 @@
 pub use document_index::DocumentIndex;
 
-pub use search_result::SearchResult;
+pub use search_result::{SearchResult, SearchResults};
 pub use sqlite_store::SqliteStore;
 pub use vector_store::{Chunk, NoopStore, VectorStore};
 
