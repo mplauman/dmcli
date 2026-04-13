@@ -1,5 +1,5 @@
 use lib::dice;
-use lib::index::{DocumentIndex, NoopStore, SearchResults, SqliteStore, VectorStore};
+use lib::index::{DocumentIndex, SearchResults, SqliteStore, VectorStore};
 use result::Result;
 use std::process;
 
@@ -25,10 +25,7 @@ fn main() -> Result<()> {
     }
 
     let rt = tokio::runtime::Runtime::new()?;
-    let store: Box<dyn VectorStore> = match config.db_path {
-        Some(path) => Box::new(rt.block_on(SqliteStore::new(path))?),
-        None => Box::new(NoopStore),
-    };
+    let store: Box<dyn VectorStore> = Box::new(rt.block_on(SqliteStore::new(config.db_path))?);
     let index = rt.block_on(DocumentIndex::new(store))?;
 
     match config.command {

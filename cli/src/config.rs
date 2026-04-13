@@ -59,7 +59,7 @@ static SCHEMA: &[SchemaSection] = &[
         table: "dmcli",
         keys: &[SchemaKey {
             key: "db_path",
-            comment: "Path to the SQLite database file used for vector storage.\n# Default: not set (search and index are no-ops without this)",
+            comment: "Path to the SQLite database file used for vector storage.\n# Default: $XDG_DATA_HOME/dmcli/chunks.db (~/.local/share/dmcli/chunks.db)",
             default_value: None,
             commented_out: true,
         }],
@@ -101,7 +101,8 @@ struct Cli {
     config: Option<PathBuf>,
 
     /// Path to the SQLite database file used for vector storage.
-    /// When not provided, indexing and search are no-ops.
+    /// Defaults to $XDG_DATA_HOME/dmcli/chunks.db
+    /// (~/.local/share/dmcli/chunks.db when XDG_DATA_HOME is not set).
     #[arg(short, long, global = true)]
     db_path: Option<PathBuf>,
 
@@ -247,8 +248,9 @@ pub enum Command {
 /// config-file values supply defaults for anything not passed on the command
 /// line.
 pub struct AppConfig {
-    /// Path to the SQLite database file, if any.
-    pub db_path: Option<PathBuf>,
+    /// Path to the SQLite database file.
+    /// Defaults to `$XDG_DATA_HOME/dmcli/chunks.db` when not overridden.
+    pub db_path: PathBuf,
     /// The resolved command to run.
     pub command: Command,
     /// The config file path supplied via `--config`, or `None` for the default.
@@ -270,8 +272,12 @@ impl AppConfig {
         let cli = Cli::parse();
         let file = FileConfig::load(cli.config.as_deref())?;
 
-        // CLI flag wins; config file is the fallback.
-        let db_path = cli.db_path.or(file.dmcli.db_path);
+        // CLI flag wins; config file is the fallback; XDG default is the last resort.
+        let db_path = cli
+            .db_path
+            .or(file.dmcli.db_path)
+            .map(Ok)
+            .unwrap_or_else(default_db_path)?;
 
         let command = match cli.command {
             CliCommand::Roll { expr, output } => Command::Roll { expr, output },
@@ -506,6 +512,14 @@ fn default_config_path() -> Result<PathBuf> {
         .ok_or_else(|| Error::Config("cannot determine config directory".to_string()))?;
 
     Ok(config_dir.join("dmcli").join("config.toml"))
+}
+
+/// Return the default database path (`$XDG_DATA_HOME/dmcli/chunks.db`).
+fn default_db_path() -> Result<PathBuf> {
+    let data_dir = dirs::data_dir()
+        .ok_or_else(|| Error::Config("cannot determine data directory".to_string()))?;
+
+    Ok(data_dir.join("dmcli").join("chunks.db"))
 }
 
 // ---------------------------------------------------------------------------
