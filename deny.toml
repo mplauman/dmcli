@@ -12,7 +12,7 @@ ignore = [
     # number_prefix crate is unmaintained; pulled in transitively by indicatif via hf-hub.
     # No safe upgrade is available upstream yet.
     "RUSTSEC-2025-0119",
-    # rustls-pemfile is unmaintained; pulled in transitively by tonic via qdrant-client.
+    # rustls-pemfile is unmaintained; pulled in transitively by tonic via libsql.
     # No safe upgrade is available upstream yet.
     "RUSTSEC-2025-0134",
     # bincode is unmaintained; pulled in transitively by libsql.
