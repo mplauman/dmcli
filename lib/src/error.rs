@@ -1,3 +1,5 @@
+use std::fmt;
+
 #[derive(Debug)]
 pub enum Error {
     Roll(String),
@@ -7,6 +9,20 @@ pub enum Error {
     ModelDownload(String),
     JSON(String),
     AIModel(String),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::Roll(msg) => write!(f, "dice roll error: {msg}"),
+            Error::IO(msg) => write!(f, "I/O error: {msg}"),
+            Error::SQL(msg) => write!(f, "database error: {msg}"),
+            Error::Index(msg) => write!(f, "index error: {msg}"),
+            Error::ModelDownload(msg) => write!(f, "model download error: {msg}"),
+            Error::JSON(msg) => write!(f, "JSON error: {msg}"),
+            Error::AIModel(msg) => write!(f, "AI model error: {msg}"),
+        }
+    }
 }
 
 impl From<caith::RollError> for Error {
@@ -24,7 +40,7 @@ impl From<caith::RollError> for Error {
 
 impl From<std::io::Error> for Error {
     fn from(err: std::io::Error) -> Self {
-        Error::Roll(format!("{err}"))
+        Error::IO(format!("{err}"))
     }
 }
 
@@ -49,20 +65,6 @@ impl From<candle_core::Error> for Error {
 impl From<libsql::Error> for Error {
     fn from(err: libsql::Error) -> Self {
         Error::SQL(format!("{err}"))
-    }
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::Roll(msg) => write!(f, "Dice roll error: {}", msg),
-            Error::IO(msg) => write!(f, "I/O error: {}", msg),
-            Error::SQL(msg) => write!(f, "SQL error: {}", msg),
-            Error::Index(msg) => write!(f, "Index error: {}", msg),
-            Error::ModelDownload(msg) => write!(f, "Model download error: {}", msg),
-            Error::JSON(msg) => write!(f, "JSON error: {}", msg),
-            Error::AIModel(msg) => write!(f, "AI model error: {}", msg),
-        }
     }
 }
 
