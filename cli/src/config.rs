@@ -734,7 +734,7 @@ whatever = 42
         let tmp = tempfile::tempdir().expect("temp dir");
         let path = tmp.path().join("config.toml");
 
-        let initial = "[dmcli]\nqdrant_url = \"http://my-server:6334\"\n";
+        let initial = "[dmcli]\ndb_path = \"/srv/campaign/chunks.db\"\n";
         std::fs::write(&path, initial).expect("write");
 
         config_update(&path).expect("update");
@@ -742,7 +742,7 @@ whatever = 42
         let contents = std::fs::read_to_string(&path).expect("read");
         // The user's value must be preserved verbatim.
         assert!(
-            contents.contains("\"http://my-server:6334\""),
+            contents.contains("\"/srv/campaign/chunks.db\""),
             "existing value was clobbered: {contents}"
         );
     }
