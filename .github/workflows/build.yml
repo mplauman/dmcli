@@ -114,7 +114,12 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           path: dist
-          merge-multiple: true
+
+      - name: Flatten artifact directories
+        run: |
+          cd dist
+          find . -maxdepth 2 -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec mv {} . \;
+          find . -maxdepth 1 -type d ! -name . -delete
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
