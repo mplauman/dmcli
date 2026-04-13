@@ -80,7 +80,21 @@ impl SqliteStore {
     ///
     /// If `db_path` is `:memory:`, an in-memory database is used.
     /// Otherwise, the database file is created or opened at the given path.
+    /// Parent directories are created automatically if they do not exist.
     pub async fn new(db_path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let db_path = db_path.as_ref();
+
+        if db_path != std::path::Path::new(":memory:")
+            && let Some(parent) = db_path.parent()
+        {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                Error::Index(format!(
+                    "Failed to create database directory {}: {e}",
+                    parent.display()
+                ))
+            })?;
+        }
+
         let db = libsql::Builder::new_local(db_path)
             .build()
             .await
@@ -426,5 +440,19 @@ mod tests {
         let a = vec![0.0_f32, 0.0];
         let b = vec![1.0_f32, 0.0];
         assert_eq!(SqliteStore::cosine_similarity(&a, &b), 0.0);
+    }
+
+    #[tokio::test]
+    async fn new_creates_missing_parent_directories() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir
+            .path()
+            .join("nested")
+            .join("dirs")
+            .join("chunks.db");
+
+        assert!(!db_path.parent().unwrap().exists());
+        SqliteStore::new(&db_path).await.unwrap();
+        assert!(db_path.parent().unwrap().exists());
     }
 }
