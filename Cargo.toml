@@ -20,7 +20,7 @@ async-trait = { version = "0.1.89", default-features = false }
 dirs = { version = "6.0.0", default-features = false }
 serde = { version = "1.0.228", default-features = false }
 toml = { version = "0.8", default-features = false }
-toml_edit = { version = "0.22", default-features = false }
+toml_edit = { version = "0.25", default-features = false }
 caith = { version = "4.2.4", default-features = false }
 candle-core = { version = "0.10.2", default-features = false }
 candle-nn = { version = "0.10.2", default-features = false }
