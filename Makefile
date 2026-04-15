@@ -10,6 +10,6 @@ docker-build:
 
 docker-run:
 	@docker run --rm -it \
-		-v $(WORKSPACE):/workspace:ro \
+		-v $(WORKSPACE):/workspace:rw \
 		$(IMAGE):latest
 
