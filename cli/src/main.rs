@@ -1,54 +1,49 @@
+use clap::{Parser, Subcommand, ValueEnum};
 use lib::dice;
-use lib::index::{DocumentIndex, SearchResults, SqliteStore, VectorStore};
 use result::Result;
-use std::process;
 
-mod config;
 mod result;
 
+/// Output format for command results.
+#[derive(Clone, ValueEnum)]
+pub enum OutputFormat {
+    /// Human-readable Markdown (default).
+    Markdown,
+    /// XML element suitable for injection into an LLM prompt.
+    Xml,
+    /// JSON object or array for structured agent-skill responses.
+    Json,
+}
+
+#[derive(Parser)]
+#[command(version, about, long_about = None)]
+#[command(propagate_version = true)]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: CliCommand,
+}
+
+#[derive(Subcommand)]
+pub enum CliCommand {
+    /// Roll a dice expression using [Caith](https://github.com/Geobert/caith?tab=readme-ov-file#syntax)
+    Roll {
+        /// Output format: markdown (default), xml, or json
+        #[arg(short, long, default_value = "markdown")]
+        output: OutputFormat,
+        expr: Vec<String>,
+    },
+}
+
 fn main() -> Result<()> {
-    let config = config::AppConfig::parse()?;
+    let cli = Cli::parse();
 
-    // Handle config subcommands before building the index — they don't need
-    // the Qdrant connection or the embedding model.
-    if let config::Command::Config { action } = config.command {
-        match config::run_config_action(action, config.config_path.as_deref()) {
-            Ok(msg) => {
-                println!("{msg}");
-                return Ok(());
-            }
-            Err(e) => {
-                eprintln!("error: {e}");
-                process::exit(1);
-            }
-        }
-    }
-
-    let rt = tokio::runtime::Runtime::new()?;
-    let store: Box<dyn VectorStore> = Box::new(rt.block_on(SqliteStore::new(config.db_path))?);
-    let index = rt.block_on(DocumentIndex::new(store))?;
-
-    match config.command {
-        config::Command::Config { .. } => unreachable!("handled above"),
-        config::Command::Roll { expr, output } => {
+    match cli.command {
+        CliCommand::Roll { expr, output } => {
             let roll = dice::roll(&expr.join(" "))?;
             let formatted = match output {
-                config::OutputFormat::Markdown => roll.to_string(),
-                config::OutputFormat::Xml => roll.to_xml(),
-                config::OutputFormat::Json => roll.to_json()?,
-            };
-            println!("{formatted}");
-        }
-        config::Command::Index { path } => match rt.block_on(index.index_path(&path)) {
-            Ok(_) => println!("Finished indexing {}", path.display()),
-            Err(e) => println!("Indexing failed: {e}"),
-        },
-        config::Command::Search { text, output } => {
-            let results = SearchResults::from(rt.block_on(index.search(&text.join(" "), 7))?);
-            let formatted = match output {
-                config::OutputFormat::Markdown => results.to_string(),
-                config::OutputFormat::Xml => results.to_xml(),
-                config::OutputFormat::Json => results.to_json()?,
+                OutputFormat::Markdown => roll.to_string(),
+                OutputFormat::Xml => roll.to_xml(),
+                OutputFormat::Json => roll.to_json()?,
             };
             println!("{formatted}");
         }
