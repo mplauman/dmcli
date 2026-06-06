@@ -5,8 +5,6 @@ use std::fmt;
 pub enum Error {
     /// Errors from the library crate.
     Lib(lib::Error),
-    /// Configuration file errors.
-    Config(String),
     /// I/O errors that occur before the library is involved.
     IO(std::io::Error),
 }
@@ -15,7 +13,6 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Lib(e) => write!(f, "{e}"),
-            Error::Config(msg) => write!(f, "configuration error: {msg}"),
             Error::IO(e) => write!(f, "I/O error: {e}"),
         }
     }
