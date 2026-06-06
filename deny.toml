@@ -5,31 +5,7 @@ targets = ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"]
 version = 2
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
-ignore = [
-    # paste crate is unmaintained; pulled in transitively by candle-core.
-    # No safe upgrade is available upstream yet.
-    "RUSTSEC-2024-0436",
-    # number_prefix crate is unmaintained; pulled in transitively by indicatif via hf-hub.
-    # No safe upgrade is available upstream yet.
-    "RUSTSEC-2025-0119",
-    # rustls-pemfile is unmaintained; pulled in transitively by tonic via libsql.
-    # No safe upgrade is available upstream yet.
-    "RUSTSEC-2025-0134",
-    # bincode is unmaintained; pulled in transitively by libsql.
-    # No safe upgrade is available upstream yet.
-    "RUSTSEC-2025-0141",
-    # rustls-webpki vulnerabilities; pulled in transitively via libsql -> rustls 0.22.x -> rustls-webpki 0.102.x.
-    # The fixes require rustls-webpki >=0.103.10/0.103.12/0.103.13, but libsql 0.9.x pins rustls 0.22.x
-    # which is only compatible with rustls-webpki 0.102.x. No upstream fix available.
-    "RUSTSEC-2026-0049",
-    "RUSTSEC-2026-0098",
-    "RUSTSEC-2026-0099",
-    "RUSTSEC-2026-0104",
-    # rand is unsound with a custom logger using rand::rng().
-    # Pulled in transitively by tower, tokenizers, and candle-core.
-    # No safe upgrade is available upstream yet.
-    "RUSTSEC-2026-0097",
-]
+ignore = []
 
 [licenses]
 allow = [
@@ -37,12 +13,7 @@ allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
-    "BSD-3-Clause",
-    "CDLA-Permissive-2.0",
-    "ISC",
     "Unicode-3.0",
-    "Zlib",
-    "MPL-2.0",
 ]
 exceptions = []
 
