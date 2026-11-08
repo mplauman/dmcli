@@ -20,12 +20,11 @@ with `agy -p 'implement the next step in the plan'`, an agent should:
    - Mark the current step `[x]`.
    - Increment `current_step` by 1 in the HTML comment.
    - Commit this bookkeeping change as `chore: advance plan to step N`.
-9. Push the branch and open a pull request:
+9. Push the branch directly using git:
    ```
-   gh pr create --base main --title "<step title>" \
-     --body "Implements step N of PLAN.md."
+   git push -u origin <branch>
    ```
-10. Stop. Do not implement the next step in the same PR.
+10. Stop. Do not implement the next step in the same branch.
 
 > The final step (Step 6) deletes this file and the brain-directory copy.
 > After that commit there is no plan to advance.
@@ -678,7 +677,7 @@ The `generate` call uses the real roll closure:
 
 Print result using existing `OutputFormat` match pattern.
 
-#### Smoke tests (run manually, include output in PR description)
+#### Smoke tests (run manually)
 
 ```
 dmcli statblock "Goblin" "1/4"
@@ -719,7 +718,7 @@ cargo clippy --all-targets --all-features
    dmcli statblock --help
    ```
 4. Commit as `chore: remove implementation plan`.
-5. Open PR. No bookkeeping update needed — the file is gone.
+5. Push the branch directly using `git push -u origin <branch>`. No bookkeeping update needed — the file is gone.
 
 ---
 
