@@ -677,7 +677,7 @@ The `generate` call uses the real roll closure:
 
 Print result using existing `OutputFormat` match pattern.
 
-#### Smoke tests (run manually)
+#### Smoke tests (run manually, include output in PR description)
 
 ```
 dmcli statblock "Goblin" "1/4"
@@ -718,7 +718,7 @@ cargo clippy --all-targets --all-features
    dmcli statblock --help
    ```
 4. Commit as `chore: remove implementation plan`.
-5. Push the branch directly using `git push -u origin <branch>`. No bookkeeping update needed — the file is gone.
+5. Open PR. No bookkeeping update needed — the file is gone.
 
 ---
 
