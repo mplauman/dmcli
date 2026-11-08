@@ -1,6 +1,6 @@
 # dmcli stat block feature — implementation plan
 
-<!-- PROGRESS: current_step=1 -->
+<!-- PROGRESS: current_step=2 -->
 
 ## How to use this plan
 
@@ -71,7 +71,7 @@ for the second and third lines.
 
 ## Step checklist
 
-- [ ] Step 1 — Ability score primitives (`lib::stats`)
+- [x] Step 1 — Ability score primitives (`lib::stats`)
 - [ ] Step 2 — 5e stat block type (`lib::statblock::StatBlock5e`)
 - [ ] Step 3 — LGMRD data module + Shadowdark/OSE types
 - [ ] Step 4 — Stat block generation (`lib::statblock::generate`)
