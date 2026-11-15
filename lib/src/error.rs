@@ -5,6 +5,7 @@ pub enum Error {
     Roll(String),
     IO(String),
     JSON(String),
+    StatBlock(String),
 }
 
 impl fmt::Display for Error {
@@ -13,6 +14,7 @@ impl fmt::Display for Error {
             Error::Roll(msg) => write!(f, "dice roll error: {msg}"),
             Error::IO(msg) => write!(f, "I/O error: {msg}"),
             Error::JSON(msg) => write!(f, "JSON error: {msg}"),
+            Error::StatBlock(msg) => write!(f, "stat block error: {msg}"),
         }
     }
 }
