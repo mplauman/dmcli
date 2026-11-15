@@ -6,7 +6,7 @@ pub mod block_sd;
 pub mod generate;
 pub mod lgmrd;
 
-pub use block_5e::{Attack, StatBlock5e};
+pub use block_5e::{Attack, Feature, StatBlock5e};
 pub use block_ose::{OseAlignment, OseAttack, StatBlockOse};
 pub use block_sd::{SdAlignment, SdAttack, StatBlockSd};
 pub use generate::{GeneratedStatBlock, Role, System, generate};

@@ -25,6 +25,31 @@ impl Attack {
     }
 }
 
+/// A creature feature with its name and concrete rules description.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Feature {
+    /// Feature name (e.g., "Knockdown").
+    pub name: String,
+    /// Concrete rules description.
+    pub description: String,
+}
+
+impl Feature {
+    /// Construct a new [`Feature`].
+    pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+        }
+    }
+}
+
+impl fmt::Display for Feature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.name, self.description)
+    }
+}
+
 /// A 5e stat block for use at the DM's table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatBlock5e {
@@ -44,8 +69,8 @@ pub struct StatBlock5e {
     pub scores: AbilityScores,
     /// Attacks available to the creature.
     pub attacks: Vec<Attack>,
-    /// Feature names printed on line 3.
-    pub features: Vec<String>,
+    /// Features available to the creature.
+    pub features: Vec<Feature>,
     /// Optional CR archetype note (e.g., "Brute").
     pub cr_note: Option<String>,
 }
@@ -57,6 +82,7 @@ impl fmt::Display for StatBlock5e {
             "{}  AC {}  HP {} ({})  Spd {} ft  CR {}",
             self.name, self.ac, self.hp, self.hp_dice, self.speed, self.cr
         )?;
+        writeln!(f, "  {}", self.scores)?;
 
         let mut line3 = String::new();
         if let Some(first_atk) = self.attacks.first() {
@@ -70,40 +96,19 @@ impl fmt::Display for StatBlock5e {
             .expect("writing to String is infallible");
         }
 
-        if !self.features.is_empty() {
-            if line3.is_empty() {
-                line3.push_str("  Features: ");
-            } else {
-                line3.push_str(" | Features: ");
+        if self.features.is_empty() {
+            write!(f, "{line3}")?;
+        } else {
+            if !line3.is_empty() {
+                writeln!(f, "{line3}")?;
             }
-
-            let mut first = true;
-            for feature in &self.features {
-                if first {
-                    let last_line = line3.lines().last().unwrap_or("");
-                    if last_line.chars().count() + feature.chars().count() > 80 {
-                        line3.push_str("\n    ");
-                    }
-                    line3.push_str(feature);
-                    first = false;
+            for (i, feature) in self.features.iter().enumerate() {
+                if i + 1 < self.features.len() {
+                    writeln!(f, "  {feature}")?;
                 } else {
-                    let last_line = line3.lines().last().unwrap_or("");
-                    if last_line.chars().count() + 2 + feature.chars().count() > 80 {
-                        line3.push_str(",\n    ");
-                        line3.push_str(feature);
-                    } else {
-                        line3.push_str(", ");
-                        line3.push_str(feature);
-                    }
+                    write!(f, "  {feature}")?;
                 }
             }
-        }
-
-        if line3.is_empty() {
-            write!(f, "  {}", self.scores)?;
-        } else {
-            writeln!(f, "  {}", self.scores)?;
-            write!(f, "{line3}")?;
         }
 
         Ok(())
@@ -148,8 +153,16 @@ impl StatBlock5e {
         }
 
         if !self.features.is_empty() {
-            writeln!(buf, "  <features>{}</features>", self.features.join(", "))
+            writeln!(buf, "  <features>").expect("writing to String is infallible");
+            for feat in &self.features {
+                writeln!(
+                    buf,
+                    "    <feature name=\"{}\">{}</feature>",
+                    feat.name, feat.description
+                )
                 .expect("writing to String is infallible");
+            }
+            writeln!(buf, "  </features>").expect("writing to String is infallible");
         }
 
         write!(buf, "</statblock>").expect("writing to String is infallible");
@@ -191,7 +204,17 @@ impl StatBlock5e {
         map.insert("attacks".to_string(), serde_json::json!(attacks_val));
 
         if !self.features.is_empty() {
-            map.insert("features".to_string(), serde_json::json!(self.features));
+            let features_val: Vec<serde_json::Value> = self
+                .features
+                .iter()
+                .map(|feat| {
+                    serde_json::json!({
+                        "name": feat.name,
+                        "description": feat.description,
+                    })
+                })
+                .collect();
+            map.insert("features".to_string(), serde_json::json!(features_val));
         }
 
         let value = serde_json::Value::Object(map);
@@ -204,7 +227,7 @@ mod tests {
     use super::*;
     use crate::stats::AbilityScore;
 
-    fn sample_goblin(features: Vec<String>) -> StatBlock5e {
+    fn sample_goblin(features: Vec<Feature>) -> StatBlock5e {
         StatBlock5e {
             name: "Goblin".to_string(),
             cr: "1/4".to_string(),
@@ -228,7 +251,10 @@ mod tests {
 
     #[test]
     fn display_contains_required_fields() {
-        let block = sample_goblin(vec!["Knockdown".to_string()]);
+        let block = sample_goblin(vec![Feature::new(
+            "Knockdown",
+            "On hit: target must succeed on a DC 11 STR save or be knocked prone.",
+        )]);
         let output = block.to_string();
 
         assert!(output.contains("Goblin"));
@@ -259,46 +285,52 @@ mod tests {
 
     #[test]
     fn display_features_presence() {
-        let with_features = sample_goblin(vec!["Knockdown".to_string()]);
-        assert!(with_features.to_string().contains("Features: Knockdown"));
+        let with_features = sample_goblin(vec![Feature::new(
+            "Knockdown",
+            "On hit: target must succeed on a DC 11 STR save or be knocked prone.",
+        )]);
+        assert!(with_features.to_string().contains("Knockdown:"));
 
         let without_features = sample_goblin(vec![]);
-        assert!(!without_features.to_string().contains("Features"));
+        assert!(!without_features.to_string().contains("Knockdown"));
     }
 
     #[test]
-    fn display_exact_three_line_format() {
-        let block = sample_goblin(vec!["Knockdown".to_string()]);
+    fn display_exact_format_without_features() {
+        let block = sample_goblin(vec![]);
         let output = block.to_string();
         let expected = concat!(
             "Goblin  AC 11  HP 13 (3d6)  Spd 30 ft  CR 1/4\n",
             "  STR 8(-1) DEX 14(+2) CON 10(+0) INT 10(+0) WIS 8(-1) CHA 8(-1)\n",
-            "  1× Atk +3 to hit, 1d6+2 | Features: Knockdown"
+            "  1× Atk +3 to hit, 1d6+2"
         );
 
         assert_eq!(output, expected);
     }
 
     #[test]
-    fn display_features_wrap_at_80_cols() {
-        let block = sample_goblin(vec![
-            "Knockdown".to_string(),
-            "Nimble Escape".to_string(),
-            "Super Long Feature Name That Exceeds Line Length".to_string(),
-        ]);
+    fn display_exact_format_with_features() {
+        let block = sample_goblin(vec![Feature::new(
+            "Knockdown",
+            "On hit: target must succeed on a DC 11 STR save or be knocked prone.",
+        )]);
         let output = block.to_string();
-        for line in output.lines() {
-            assert!(
-                line.chars().count() <= 80,
-                "line exceeds 80 characters: {line}"
-            );
-        }
-        assert!(output.contains("\n    Super Long Feature Name That Exceeds Line Length"));
+        let expected = concat!(
+            "Goblin  AC 11  HP 13 (3d6)  Spd 30 ft  CR 1/4\n",
+            "  STR 8(-1) DEX 14(+2) CON 10(+0) INT 10(+0) WIS 8(-1) CHA 8(-1)\n",
+            "  1× Atk +3 to hit, 1d6+2\n",
+            "  Knockdown: On hit: target must succeed on a DC 11 STR save or be knocked prone."
+        );
+
+        assert_eq!(output, expected);
     }
 
     #[test]
     fn xml_starts_and_ends_correctly() {
-        let block = sample_goblin(vec!["Knockdown".to_string()]);
+        let block = sample_goblin(vec![Feature::new(
+            "Knockdown",
+            "On hit: target must succeed on a DC 11 STR save or be knocked prone.",
+        )]);
         let xml = block.to_xml();
 
         assert!(xml.starts_with("<statblock"));
@@ -314,7 +346,7 @@ mod tests {
             )
         );
         assert!(xml.contains("<attacks count=\"1\" bonus=\"+3\" damage=\"1d6+2\"/>"));
-        assert!(xml.contains("<features>Knockdown</features>"));
+        assert!(xml.contains("<feature name=\"Knockdown\">On hit: target must succeed on a DC 11 STR save or be knocked prone.</feature>"));
     }
 
     #[test]
@@ -327,7 +359,10 @@ mod tests {
 
     #[test]
     fn json_parses_as_valid_with_system_field() {
-        let block = sample_goblin(vec!["Knockdown".to_string()]);
+        let block = sample_goblin(vec![Feature::new(
+            "Knockdown",
+            "On hit: target must succeed on a DC 11 STR save or be knocked prone.",
+        )]);
         let json_str = block.to_json().expect("JSON serialization succeeds");
         let parsed: serde_json::Value =
             serde_json::from_str(&json_str).expect("Valid JSON expected");
@@ -347,7 +382,13 @@ mod tests {
         assert_eq!(parsed["scores"]["cha"], 8);
         assert_eq!(parsed["attacks"][0]["bonus"], 3);
         assert_eq!(parsed["attacks"][0]["damage_dice"], "1d6+2");
-        assert_eq!(parsed["features"][0], "Knockdown");
+        assert_eq!(parsed["features"][0]["name"], "Knockdown");
+        assert!(
+            parsed["features"][0]["description"]
+                .as_str()
+                .unwrap()
+                .contains("DC 11 STR save")
+        );
     }
 
     #[test]

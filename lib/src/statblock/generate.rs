@@ -4,7 +4,7 @@ use std::fmt;
 
 use crate::error::Error;
 use crate::result::Result;
-use crate::statblock::block_5e::{Attack, StatBlock5e};
+use crate::statblock::block_5e::{Attack, Feature, StatBlock5e};
 use crate::statblock::block_ose::{OseAlignment, OseAttack, StatBlockOse};
 use crate::statblock::block_sd::{SdAlignment, SdAttack, StatBlockSd};
 use crate::statblock::lgmrd::{ARCHETYPES, CR_TABLE, FEATURES};
@@ -135,17 +135,54 @@ pub fn generate(
             let rolled_hp = roll_fn(cr_row.hp_dice)?;
             let hp = rolled_hp.clamp(1, u16::MAX as i64) as u16;
 
-            let mut feature_names = Vec::new();
+            let save_dc = cr_row.prof_bonus + 8;
+            let mut built_features: Vec<Feature> = Vec::new();
             let mut cost_attacks = 0u8;
             for slug in features {
                 let feat = FEATURES
                     .iter()
                     .find(|f| f.slug.eq_ignore_ascii_case(slug))
                     .ok_or_else(|| Error::StatBlock(format!("unknown feature slug: {slug}")))?;
-                feature_names.push(feat.name.to_string());
                 if feat.costs_attack {
                     cost_attacks = cost_attacks.saturating_add(1);
                 }
+                let description = match feat.slug {
+                    "knockdown" => format!("On hit: STR save DC {save_dc} or knocked prone."),
+                    "restraining-grab" => {
+                        format!("On hit: grappled and restrained; escape DC {save_dc}.")
+                    }
+                    "damage-reflection" => format!(
+                        "Melee attacker takes {} damage on a hit.",
+                        cr_row.damage_dice
+                    ),
+                    "damaging-aura" => format!(
+                        "Creatures starting turn within 10 ft take {} damage.",
+                        cr_row.damage_dice
+                    ),
+                    "damaging-blast" => format!(
+                        "Ranged attack {:+} to hit, {}.",
+                        cr_row.prof_bonus, cr_row.damage_dice
+                    ),
+                    "damaging-burst" => format!(
+                        "Action: 10-ft burst up to 120 ft; DC {save_dc} DEX/CON/WIS save or take {}.",
+                        cr_row.damage_dice
+                    ),
+                    "misty-step" => {
+                        "Bonus action: teleport up to 30 ft to a visible unoccupied space."
+                            .to_string()
+                    }
+                    "cunning-action" => "Bonus action: Dash, Disengage, or Hide.".to_string(),
+                    "energy-weapons" => {
+                        "Weapon attacks deal additional damage of one element or magic type."
+                            .to_string()
+                    }
+                    "damage-transference" => {
+                        "On taking damage: transfer half or all to a willing creature within 60 ft."
+                            .to_string()
+                    }
+                    _ => feat.description.to_string(),
+                };
+                built_features.push(Feature::new(feat.name, description));
             }
 
             let final_attacks = cr_row.num_attacks.saturating_sub(cost_attacks).max(1);
@@ -170,7 +207,7 @@ pub fn generate(
                 speed: 30,
                 scores,
                 attacks,
-                features: feature_names,
+                features: built_features,
                 cr_note: Some(archetype.name.to_string()),
             };
 
@@ -256,7 +293,14 @@ mod tests {
         let block = generate("Goblin", "1/4", System::Dnd5e, None, &["knockdown"], fixed)
             .expect("generation succeeds");
         if let GeneratedStatBlock::Dnd5e(b) = block {
-            assert_eq!(b.features, vec!["Knockdown"]);
+            assert_eq!(b.features.len(), 1);
+            assert_eq!(b.features[0].name, "Knockdown");
+            // DC = prof_bonus (3) + 8 = 11 for CR 1/4
+            assert!(
+                b.features[0].description.contains("DC 11"),
+                "description should contain computed DC: {}",
+                b.features[0].description
+            );
             assert_eq!(b.attacks.len(), 1);
         } else {
             panic!("expected Dnd5e variant");
