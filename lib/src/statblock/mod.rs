@@ -14,4 +14,4 @@ pub use generate::{GeneratedStatBlock, Role, System, generate};
 pub use lgmrd::{
     ARCHETYPES, Archetype, CR_TABLE, CrRow, FEATURES, MonsterFeature, TACTICAL_ROLES, TacticalRole,
 };
-pub use skill::StatBlockSkill;
+pub use skill::SKILL_TEXT;
