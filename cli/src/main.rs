@@ -156,6 +156,35 @@ pub enum CliCommand {
         /// CR for 5e ("0", "1/8", "1/4", "1/2", "1"–"30"), level for Shadowdark ("1"–"20"), or HD string for OSE ("2", "1-1", "3+1")
         cr_or_level: String,
     },
+    /// Emit an AGY agent skill file for a stat block to stdout
+    ///
+    /// Pipe the output to a SKILL.md inside a skill directory. When the skill
+    /// is activated, the agent produces a read-aloud description, per-feature
+    /// flavour sentences, and a tactics note — all ready to use at the table.
+    ///
+    /// Example:
+    ///   dmcli statblock-skill "Cave Troll" 5 --feature knockdown \
+    ///     > ~/.gemini/skills/cave-troll/SKILL.md
+    #[command(name = "statblock-skill")]
+    StatblockSkill {
+        /// Rule system [default: 5e]
+        #[arg(short, long, default_value = "5e")]
+        system: StatblockSystem,
+
+        /// Ability score archetype for 5e [default: brute]
+        #[arg(short, long, default_value = "brute")]
+        role: StatblockRole,
+
+        /// Monster feature slug, repeatable [default: none]
+        #[arg(short, long)]
+        feature: Vec<StatblockFeature>,
+
+        /// Monster name (quote multi-word names)
+        name: String,
+
+        /// CR for 5e ("0", "1/8", "1/4", "1/2", "1"–"30"), level for Shadowdark ("1"–"20"), or HD string for OSE ("2", "1-1", "3+1")
+        cr_or_level: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -194,6 +223,25 @@ fn main() -> Result<()> {
                 OutputFormat::Json => statblock.to_json()?,
             };
             println!("{formatted}");
+        }
+        CliCommand::StatblockSkill {
+            system,
+            role,
+            feature,
+            name,
+            cr_or_level,
+        } => {
+            let feature_strs: Vec<&str> = feature.iter().map(StatblockFeature::slug).collect();
+            let statblock = lib::statblock::generate(
+                &name,
+                &cr_or_level,
+                system.into(),
+                Some(role.into()),
+                &feature_strs,
+                |expr| dice::roll(expr).map(|r| r.total()),
+            )?;
+            let skill = lib::statblock::StatBlockSkill::new(&name, statblock);
+            print!("{skill}");
         }
     }
 
