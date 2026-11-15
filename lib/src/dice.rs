@@ -71,6 +71,17 @@ impl fmt::Display for DiceRoll {
 }
 
 impl DiceRoll {
+    /// Returns the roll total.
+    ///
+    /// For a single roll this is the value; for a multi-roll it is the sum
+    /// of all individual results.
+    pub fn total(&self) -> i64 {
+        match self {
+            DiceRoll::Single(v, _) => *v,
+            DiceRoll::Multi(vs, _) => vs.iter().sum(),
+        }
+    }
+
     /// Renders the roll as an XML element for injection into an LLM prompt.
     ///
     /// ```text
@@ -318,5 +329,11 @@ mod tests {
     fn json_multi_total_is_sum_of_values() {
         let json = parse(&DiceRoll::Multi(vec![1, 2, 3, 4], None));
         assert_eq!(json["total"], 10);
+    }
+
+    #[test]
+    fn total_returns_correct_sum() {
+        assert_eq!(DiceRoll::Single(7, None).total(), 7);
+        assert_eq!(DiceRoll::Multi(vec![2, 4, 6], None).total(), 12);
     }
 }
