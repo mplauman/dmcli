@@ -72,6 +72,49 @@ impl From<StatblockRole> for lib::statblock::Role {
     }
 }
 
+/// Monster feature for 5e stat block generation.
+#[derive(Clone, Copy, ValueEnum)]
+pub enum StatblockFeature {
+    /// Single-target ranged attack using standard attack bonus and damage.
+    DamagingBlast,
+    /// Melee attacker takes damage equal to half one attack; costs 1 attack.
+    DamageReflection,
+    /// Bonus action: teleport up to 30 ft to a visible unoccupied space.
+    MistyStep,
+    /// On hit: target must succeed on STR save or be knocked prone.
+    Knockdown,
+    /// On hit: target is grappled and restrained.
+    RestrainingGrab,
+    /// Action: 10-ft burst anywhere within 120 ft; half DPR.
+    DamagingBurst,
+    /// Bonus action: Dash, Disengage, or Hide.
+    CunningAction,
+    /// Creatures starting turn within 10 ft take half one attack damage; costs 1 attack.
+    DamagingAura,
+    /// Weapon attacks deal additional elemental/magical damage.
+    EnergyWeapons,
+    /// On taking damage: transfer half or all damage to a willing creature within 60 ft.
+    DamageTransference,
+}
+
+impl StatblockFeature {
+    /// Return the CLI-friendly slug representation.
+    pub fn slug(&self) -> &'static str {
+        match self {
+            StatblockFeature::DamagingBlast => "damaging-blast",
+            StatblockFeature::DamageReflection => "damage-reflection",
+            StatblockFeature::MistyStep => "misty-step",
+            StatblockFeature::Knockdown => "knockdown",
+            StatblockFeature::RestrainingGrab => "restraining-grab",
+            StatblockFeature::DamagingBurst => "damaging-burst",
+            StatblockFeature::CunningAction => "cunning-action",
+            StatblockFeature::DamagingAura => "damaging-aura",
+            StatblockFeature::EnergyWeapons => "energy-weapons",
+            StatblockFeature::DamageTransference => "damage-transference",
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 #[command(propagate_version = true)]
@@ -101,7 +144,7 @@ pub enum CliCommand {
 
         /// Monster feature slug, repeatable [default: none]
         #[arg(short, long)]
-        feature: Vec<String>,
+        feature: Vec<StatblockFeature>,
 
         /// Output format [default: markdown]
         #[arg(short, long, default_value = "markdown")]
@@ -136,7 +179,7 @@ fn main() -> Result<()> {
             name,
             cr_or_level,
         } => {
-            let feature_strs: Vec<&str> = feature.iter().map(String::as_str).collect();
+            let feature_strs: Vec<&str> = feature.iter().map(StatblockFeature::slug).collect();
             let statblock = lib::statblock::generate(
                 &name,
                 &cr_or_level,
