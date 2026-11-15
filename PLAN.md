@@ -1,6 +1,6 @@
 # dmcli stat block feature — implementation plan
 
-<!-- PROGRESS: current_step=5 -->
+<!-- PROGRESS: current_step=6 -->
 
 ## How to use this plan
 
@@ -74,7 +74,7 @@ for the second and third lines.
 - [x] Step 2 — 5e stat block type (`lib::statblock::StatBlock5e`)
 - [x] Step 3 — LGMRD data module + Shadowdark/OSE types
 - [x] Step 4 — Stat block generation (`lib::statblock::generate`)
-- [ ] Step 5 — CLI subcommand (`dmcli statblock`)
+- [x] Step 5 — CLI subcommand (`dmcli statblock`)
 - [ ] Step 6 — Cleanup: delete this plan
 
 ---
