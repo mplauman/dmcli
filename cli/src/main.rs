@@ -156,6 +156,17 @@ pub enum CliCommand {
         /// CR for 5e ("0", "1/8", "1/4", "1/2", "1"–"30"), level for Shadowdark ("1"–"20"), or HD string for OSE ("2", "1-1", "3+1")
         cr_or_level: String,
     },
+    /// Emit an AGY agent skill file for the statblock command to stdout
+    ///
+    /// Pipe the output to a SKILL.md inside a skill directory. When activated,
+    /// the agent runs `dmcli statblock` for a creature of the user's choosing
+    /// and enriches the output with a read-aloud description, per-feature
+    /// flavour sentences, and a tactics note.
+    ///
+    /// Example:
+    ///   dmcli statblock-skill > ~/.gemini/skills/statblock-flavour/SKILL.md
+    #[command(name = "statblock-skill")]
+    StatblockSkill,
 }
 
 fn main() -> Result<()> {
@@ -194,6 +205,9 @@ fn main() -> Result<()> {
                 OutputFormat::Json => statblock.to_json()?,
             };
             println!("{formatted}");
+        }
+        CliCommand::StatblockSkill => {
+            print!("{}", lib::statblock::SKILL_TEXT);
         }
     }
 
