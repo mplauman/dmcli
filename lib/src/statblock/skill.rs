@@ -13,8 +13,9 @@ mod tests {
 
     #[test]
     fn skill_text_has_frontmatter_and_instructions() {
-        assert!(SKILL_TEXT.starts_with("---\n"));
-        assert!(SKILL_TEXT.contains("name: statblock-flavour\n"));
+        let mut lines = SKILL_TEXT.lines();
+        assert_eq!(lines.next(), Some("---"));
+        assert_eq!(lines.next(), Some("name: statblock-flavour"));
         assert!(SKILL_TEXT.contains("description:"));
         assert!(SKILL_TEXT.contains("dmcli statblock"));
         assert!(SKILL_TEXT.contains("Look & Feel"));
